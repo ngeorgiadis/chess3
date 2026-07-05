@@ -1,0 +1,200 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "lesson-rook-pawn-corner-draw-001",
+  "title": "Rook Pawn Endgames: The Corner Drawing Idea",
+  "slug": "rook-pawn-corner-draw",
+  "summary": "A practical lesson on why rook pawns are special and how the defender uses the corner to draw many king-and-pawn endings.",
+  "targetRating": {
+    "min": 1300,
+    "max": 1700
+  },
+  "estimatedMinutes": 18,
+  "objectives": [
+    "Recognize when a rook pawn is harder to win than a central pawn.",
+    "Use the promotion corner as a defensive resource.",
+    "Avoid pushing the rook pawn too early when king position matters more."
+  ],
+  "prerequisites": [
+    "Basic king movement",
+    "Basic pawn promotion rules",
+    "Opposition"
+  ],
+  "tags": [
+    "endgame",
+    "king-and-pawn",
+    "rook-pawn",
+    "drawing-resource",
+    "1500"
+  ],
+  "source": {
+    "type": "original",
+    "rightsMode": "notes-only",
+    "title": "Original app sample lesson",
+    "transformationNote": "Created as a schema example, not copied from a book."
+  },
+  "positions": [
+    {
+      "id": "pos-rook-pawn-corner-001",
+      "title": "The defender reaches the corner",
+      "fen": "8/8/8/8/7k/8/6KP/8 w - - 0 1",
+      "sideToMove": "white",
+      "orientation": "white",
+      "tags": [
+        "rook-pawn",
+        "corner-draw"
+      ],
+      "highlights": [
+        {
+          "square": "h8",
+          "label": "promotion corner"
+        }
+      ],
+      "verification": {
+        "status": "human-checked",
+        "note": "Simple illustrative king and rook-pawn ending."
+      }
+    },
+    {
+      "id": "pos-king-first-001",
+      "title": "Improve the king before pushing",
+      "fen": "8/8/8/7k/8/8/5K1P/8 w - - 0 1",
+      "sideToMove": "white",
+      "orientation": "white",
+      "tags": [
+        "king-activity",
+        "rook-pawn"
+      ],
+      "verification": {
+        "status": "human-checked"
+      }
+    },
+    {
+      "id": "pos-save-draw-001",
+      "title": "Find the drawing route",
+      "fen": "8/8/8/8/8/6k1/7P/6K1 b - - 0 1",
+      "sideToMove": "black",
+      "orientation": "black",
+      "tags": [
+        "defense",
+        "rook-pawn",
+        "corner-draw"
+      ],
+      "arrows": [
+        {
+          "from": "g3",
+          "to": "h3",
+          "label": "head toward the corner"
+        }
+      ],
+      "verification": {
+        "status": "human-checked"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-concept-001",
+      "type": "concept",
+      "title": "Why rook pawns are special",
+      "positionRef": "pos-rook-pawn-corner-001",
+      "content": "A rook pawn promotes on the edge of the board. That means the defender often needs fewer squares to survive. If the defending king reaches the promotion corner, the attacker may not be able to force the king out.",
+      "conceptRefs": [
+        "rook-pawn",
+        "promotion-corner"
+      ]
+    },
+    {
+      "id": "step-guided-001",
+      "type": "guided_question",
+      "title": "What should White worry about?",
+      "positionRef": "pos-rook-pawn-corner-001",
+      "content": "Look at the h-pawn. White wants to queen it, but the black king is close to the corner.",
+      "prompt": "What is Black's main defensive dream?",
+      "expectedAnswer": "Black wants to occupy or stay near h8, the pawn's promotion square.",
+      "feedback": "Exactly. Against rook pawns, the promotion corner can become a fortress."
+    },
+    {
+      "id": "step-demo-001",
+      "type": "demonstration",
+      "title": "King before pawn",
+      "positionRef": "pos-king-first-001",
+      "content": "In many pawn endings, improving the king is more important than rushing the pawn. If you push too early, the defender may get the corner in time.",
+      "line": [
+        {
+          "moveUci": "f2g3",
+          "moveSan": "Kg3",
+          "comment": "White tries to improve the king first."
+        }
+      ]
+    },
+    {
+      "id": "step-review-001",
+      "type": "review_checkpoint",
+      "title": "Checkpoint",
+      "content": "Before pushing a rook pawn, ask: Can my king control the promotion corner or force the defender away? If not, the pawn may not win."
+    }
+  ],
+  "exercises": [
+    {
+      "id": "ex-save-draw-001",
+      "type": "save_draw",
+      "title": "Head for the corner",
+      "prompt": "Black to move. Choose the defensive idea that gives the best drawing chances.",
+      "positionRef": "pos-save-draw-001",
+      "solution": {
+        "moves": [
+          {
+            "moveUci": "g3h3",
+            "moveSan": "Kh3"
+          }
+        ],
+        "explanation": "The defender should move toward the h-file corner. Against a rook pawn, reaching the promotion corner is often enough to draw.",
+        "remember": "When defending against a rook pawn, run toward the promotion corner.",
+        "verification": {
+          "status": "human-checked"
+        }
+      },
+      "hints": [
+        "Which square will the pawn promote on?",
+        "Where does the defending king want to stand?"
+      ],
+      "wrongAnswerFeedback": [
+        {
+          "pattern": "king-away-from-corner",
+          "feedback": "Moving away from the h-file gives the attacker more chances to escort the pawn."
+        }
+      ],
+      "difficulty": 2,
+      "tags": [
+        "endgame",
+        "defense",
+        "rook-pawn"
+      ],
+      "spacedRepetition": {
+        "initialIntervalDays": 2,
+        "priority": "normal"
+      }
+    }
+  ],
+  "review": {
+    "keyTakeaways": [
+      "Rook pawns are special because promotion happens in the corner.",
+      "The defender often draws by reaching the promotion corner.",
+      "The attacker should improve the king before blindly pushing the pawn."
+    ],
+    "selfTest": [
+      "What is the defender's dream square against an h-pawn?",
+      "Why is an h-pawn different from an e-pawn?",
+      "Before pushing a rook pawn, what should the attacker check?"
+    ],
+    "nextLessons": [
+      "lucena-position-basics",
+      "philidor-defense-basics",
+      "outside-passed-pawn"
+    ]
+  },
+  "metadata": {
+    "createdFor": "schema-example",
+    "pedagogy": "concept-example-exercise-review"
+  }
+}

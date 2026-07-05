@@ -1,0 +1,204 @@
+import { Chess } from 'chess.js'
+import { getDb, uid, now } from './db'
+import { broadcast } from './events'
+import type { RepertoireNodeRecord } from '@shared/types'
+
+function rowToNode(row: Record<string, unknown>): RepertoireNodeRecord {
+  return {
+    id: row.id as string,
+    color: row.color as 'white' | 'black',
+    parentId: (row.parent_id as string) ?? null,
+    fenBefore: row.fen_before as string,
+    moveUci: row.move_uci as string,
+    moveSan: row.move_san as string,
+    priority: row.priority as RepertoireNodeRecord['priority'],
+    status: row.status as RepertoireNodeRecord['status'],
+    comment: (row.comment as string) ?? null,
+    source: JSON.parse(row.source_json as string),
+    dueAt: (row.due_at as string) ?? null,
+    intervalDays: row.interval_days as number,
+    ease: row.ease as number
+  }
+}
+
+export function listNodes(color?: 'white' | 'black'): RepertoireNodeRecord[] {
+  const rows = (
+    color
+      ? getDb().prepare('SELECT * FROM repertoire_nodes WHERE color = ?').all(color)
+      : getDb().prepare('SELECT * FROM repertoire_nodes').all()
+  ) as Array<Record<string, unknown>>
+  return rows.map(rowToNode)
+}
+
+export interface AddNodeArgs {
+  color: 'white' | 'black'
+  fenBefore: string
+  moveUci: string
+  comment?: string
+  source?: { type: string; gameId?: string }
+  parentId?: string | null
+}
+
+/** Add a repertoire node; duplicate (color, fen, move) returns the existing node. */
+export function addNode(args: AddNodeArgs): RepertoireNodeRecord {
+  const db = getDb()
+  const existing = db
+    .prepare('SELECT * FROM repertoire_nodes WHERE color = ? AND fen_before = ? AND move_uci = ?')
+    .get(args.color, args.fenBefore, args.moveUci) as Record<string, unknown> | undefined
+  if (existing) return rowToNode(existing)
+
+  const chess = new Chess(args.fenBefore)
+  const mv = chess.move({
+    from: args.moveUci.slice(0, 2),
+    to: args.moveUci.slice(2, 4),
+    promotion: args.moveUci.slice(4) || undefined
+  })
+
+  const id = uid('rep')
+  db.prepare(
+    `INSERT INTO repertoire_nodes (id, color, parent_id, fen_before, move_uci, move_san, priority, status, comment, source_json, due_at, interval_days, ease)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    id,
+    args.color,
+    args.parentId ?? null,
+    args.fenBefore,
+    args.moveUci,
+    mv.san,
+    'normal',
+    'learning',
+    args.comment ?? null,
+    JSON.stringify(args.source ?? { type: 'manual' }),
+    now(),
+    0,
+    2.5
+  )
+  broadcast({ type: 'repertoire:changed', payload: null })
+  const row = db.prepare('SELECT * FROM repertoire_nodes WHERE id = ?').get(id) as Record<string, unknown>
+  return rowToNode(row)
+}
+
+/** One-click "add line to repertoire" from game review: adds the user's moves up to a ply. */
+export function addLineFromGame(gameId: string, uptoPly: number): RepertoireNodeRecord[] {
+  const db = getDb()
+  const game = db.prepare('SELECT user_color FROM games WHERE id = ?').get(gameId) as
+    | { user_color: string }
+    | undefined
+  if (!game) throw new Error('Game not found')
+  const color = (game.user_color === 'unknown' ? 'white' : game.user_color) as 'white' | 'black'
+
+  const moves = db
+    .prepare('SELECT ply, color, uci, fen_before FROM moves WHERE game_id = ? AND ply <= ? ORDER BY ply')
+    .all(gameId, uptoPly) as Array<{ ply: number; color: string; uci: string; fen_before: string }>
+
+  const created: RepertoireNodeRecord[] = []
+  let parentId: string | null = null
+  for (const mv of moves) {
+    const node = addNode({
+      color,
+      fenBefore: mv.fen_before,
+      moveUci: mv.uci,
+      parentId,
+      source: { type: 'game', gameId }
+    })
+    parentId = node.id
+    if (mv.color === color) created.push(node)
+  }
+  return created
+}
+
+/** Add a library opening line (SAN from the start position) to the repertoire. */
+export function addOpeningLine(args: {
+  color: 'white' | 'black'
+  sanMoves: string[]
+  openingName: string
+  lineName?: string
+  comment?: string
+}): RepertoireNodeRecord[] {
+  const chess = new Chess()
+  const label = args.lineName ? `${args.openingName} — ${args.lineName}` : args.openingName
+  const created: RepertoireNodeRecord[] = []
+  let parentId: string | null = null
+  for (let i = 0; i < args.sanMoves.length; i++) {
+    const fenBefore = chess.fen()
+    const mv = chess.move(args.sanMoves[i])
+    const isUserMove = (mv.color === 'w') === (args.color === 'white')
+    const isLast = i === args.sanMoves.length - 1
+    const node = addNode({
+      color: args.color,
+      fenBefore,
+      moveUci: mv.from + mv.to + (mv.promotion ?? ''),
+      parentId,
+      comment: isUserMove && isLast && args.comment ? `${label}. ${args.comment}` : isUserMove ? label : undefined,
+      source: { type: 'library' }
+    })
+    parentId = node.id
+    if (isUserMove) created.push(node)
+  }
+  return created
+}
+
+/** Only positions where the repertoire owner is to move are quizzed; opponent-move
+ * nodes exist for tree structure and are auto-played during practice. */
+function userToMove(node: RepertoireNodeRecord): boolean {
+  return node.fenBefore.split(' ')[1] === (node.color === 'white' ? 'w' : 'b')
+}
+
+export function dueNodes(limit = 30): RepertoireNodeRecord[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM repertoire_nodes WHERE due_at IS NOT NULL AND due_at <= ? ORDER BY due_at')
+    .all(now()) as Array<Record<string, unknown>>
+  return rows.map(rowToNode).filter(userToMove).slice(0, limit)
+}
+
+export function countDueNodes(): number {
+  const rows = getDb()
+    .prepare('SELECT color, fen_before FROM repertoire_nodes WHERE due_at IS NOT NULL AND due_at <= ?')
+    .all(now()) as Array<{ color: string; fen_before: string }>
+  return rows.filter((r) => r.fen_before.split(' ')[1] === (r.color === 'white' ? 'w' : 'b')).length
+}
+
+export function attemptNode(id: string, correct: boolean): RepertoireNodeRecord {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM repertoire_nodes WHERE id = ?').get(id) as
+    | Record<string, unknown>
+    | undefined
+  if (!row) throw new Error('Repertoire node not found')
+  const node = rowToNode(row)
+
+  let ease = node.ease
+  let intervalDays: number
+  let status = node.status
+  if (correct) {
+    ease = Math.min(3.0, ease + 0.05)
+    intervalDays = node.intervalDays <= 0 ? 1 : Math.round(node.intervalDays * ease * 10) / 10
+    if (intervalDays >= 7) status = 'known'
+  } else {
+    ease = Math.max(1.3, ease - 0.2)
+    intervalDays = 0
+    status = node.status === 'known' ? 'lapsed' : 'learning'
+  }
+  const dueAt = correct
+    ? new Date(Date.now() + intervalDays * 86_400_000).toISOString()
+    : new Date(Date.now() + 10 * 60_000).toISOString()
+
+  db.prepare('UPDATE repertoire_nodes SET ease = ?, interval_days = ?, due_at = ?, status = ? WHERE id = ?').run(
+    ease,
+    intervalDays,
+    dueAt,
+    status,
+    id
+  )
+  broadcast({ type: 'repertoire:changed', payload: null })
+  return rowToNode(db.prepare('SELECT * FROM repertoire_nodes WHERE id = ?').get(id) as Record<string, unknown>)
+}
+
+export function setNodePriority(id: string, priority: RepertoireNodeRecord['priority']): void {
+  getDb().prepare('UPDATE repertoire_nodes SET priority = ? WHERE id = ?').run(priority, id)
+  broadcast({ type: 'repertoire:changed', payload: null })
+}
+
+export function deleteNode(id: string): void {
+  getDb().prepare('DELETE FROM repertoire_nodes WHERE id = ? OR parent_id = ?').run(id, id)
+  broadcast({ type: 'repertoire:changed', payload: null })
+}

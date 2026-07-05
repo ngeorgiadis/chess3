@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "course-first-1500-improvement-001",
+  "title": "First 1500 Improvement Plan",
+  "slug": "first-1500-improvement-plan",
+  "summary": "A compact course path for a 1500-rated player focused on tactics, opening stability, practical endgames, and better game review.",
+  "targetRating": {
+    "min": 1400,
+    "max": 1700
+  },
+  "estimatedHours": 12,
+  "tags": [
+    "1500",
+    "improvement",
+    "tactics",
+    "openings",
+    "endgames",
+    "game-review"
+  ],
+  "modules": [
+    {
+      "id": "module-stop-blunders",
+      "title": "Stop the avoidable blunders",
+      "summary": "Build a forcing-move and blunder-check routine.",
+      "lessonRefs": [
+        "lesson-forcing-moves-checklist",
+        "lesson-loose-pieces",
+        "lesson-critical-moment-routine"
+      ],
+      "assessmentRefs": [
+        "assessment-blunder-check-001"
+      ]
+    },
+    {
+      "id": "module-opening-stability",
+      "title": "Reach playable middlegames",
+      "summary": "Create a narrow repertoire and learn the plans after the opening.",
+      "lessonRefs": [
+        "lesson-repertoire-tree-basics",
+        "lesson-opening-plans-after-move-10"
+      ],
+      "assessmentRefs": [
+        "assessment-opening-recall-001"
+      ]
+    },
+    {
+      "id": "module-practical-endgames",
+      "title": "Win and save practical endings",
+      "summary": "Learn king activity, opposition, rook-pawn ideas, and basic rook endings.",
+      "lessonRefs": [
+        "lesson-rook-pawn-corner-draw-001",
+        "lesson-opposition-basics",
+        "lesson-rook-activity"
+      ],
+      "assessmentRefs": [
+        "assessment-endgame-basics-001"
+      ]
+    }
+  ],
+  "assessment": {
+    "entryCriteria": [
+      "User has imported at least 20 games or chooses sample mode."
+    ],
+    "completionCriteria": [
+      "Complete at least 80% of lessons.",
+      "Solve 50 personalized exercises with 70%+ accuracy.",
+      "Review at least 10 own games using the critical moment template."
+    ]
+  }
+}

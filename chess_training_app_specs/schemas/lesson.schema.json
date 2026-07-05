@@ -1,0 +1,522 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chessmentor.local/schemas/lesson.schema.json",
+  "title": "Chess Mentor Lesson",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "title",
+    "slug",
+    "summary",
+    "targetRating",
+    "estimatedMinutes",
+    "objectives",
+    "positions",
+    "steps",
+    "exercises",
+    "review"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 10
+    },
+    "targetRating": {
+      "$ref": "#/$defs/ratingBand"
+    },
+    "estimatedMinutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "objectives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "prerequisites": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "positions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/position"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "exercises": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/exercise"
+      }
+    },
+    "review": {
+      "$ref": "#/$defs/review"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "ratingBand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ],
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "user-notes",
+            "public-domain",
+            "licensed",
+            "user-owned",
+            "game-analysis",
+            "original",
+            "unknown"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "rightsMode": {
+          "type": "string",
+          "enum": [
+            "user-owned",
+            "licensed",
+            "public-domain",
+            "notes-only",
+            "unknown"
+          ]
+        },
+        "transformationNote": {
+          "type": "string"
+        }
+      }
+    },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "fen",
+        "sideToMove"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "fen": {
+          "type": "string"
+        },
+        "sideToMove": {
+          "type": "string",
+          "enum": [
+            "white",
+            "black"
+          ]
+        },
+        "orientation": {
+          "type": "string",
+          "enum": [
+            "white",
+            "black",
+            "side-to-move"
+          ],
+          "default": "side-to-move"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "highlights": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/highlight"
+          }
+        },
+        "arrows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/arrow"
+          }
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "sourceRef": {
+          "type": "string"
+        }
+      }
+    },
+    "highlight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "square",
+        "label"
+      ],
+      "properties": {
+        "square": {
+          "type": "string",
+          "pattern": "^[a-h][1-8]$"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "arrow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "label"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^[a-h][1-8]$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^[a-h][1-8]$"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "unverified",
+            "engine-checked",
+            "human-checked"
+          ]
+        },
+        "engine": {
+          "type": "string"
+        },
+        "depth": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "title",
+        "content"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "concept",
+            "demonstration",
+            "guided_question",
+            "move_input",
+            "evaluation_choice",
+            "model_game_segment",
+            "reflection",
+            "review_checkpoint"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "positionRef": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "expectedAnswer": {
+          "type": "string"
+        },
+        "solution": {
+          "$ref": "#/$defs/solution"
+        },
+        "feedback": {
+          "type": "string"
+        },
+        "line": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/move"
+          }
+        },
+        "conceptRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "exercise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "title",
+        "prompt",
+        "positionRef",
+        "solution",
+        "difficulty",
+        "tags"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "best_move",
+            "multi_move_line",
+            "save_draw",
+            "convert_win",
+            "candidate_selection",
+            "plan_selection",
+            "evaluation_comparison",
+            "error_diagnosis"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "positionRef": {
+          "type": "string"
+        },
+        "solution": {
+          "$ref": "#/$defs/solution"
+        },
+        "hints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "wrongAnswerFeedback": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/wrongAnswerFeedback"
+          }
+        },
+        "difficulty": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "spacedRepetition": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "initialIntervalDays": {
+              "type": "number"
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "normal",
+                "high"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "move": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "moveUci"
+      ],
+      "properties": {
+        "moveUci": {
+          "type": "string"
+        },
+        "moveSan": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        }
+      }
+    },
+    "solution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "moves",
+        "explanation"
+      ],
+      "properties": {
+        "moves": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/move"
+          }
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "remember": {
+          "type": "string"
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      }
+    },
+    "wrongAnswerFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pattern",
+        "feedback"
+      ],
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "feedback": {
+          "type": "string"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyTakeaways",
+        "selfTest"
+      ],
+      "properties": {
+        "keyTakeaways": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "selfTest": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nextLessons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

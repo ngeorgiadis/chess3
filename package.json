@@ -1,0 +1,35 @@
+{
+  "name": "chess-mentor-studio",
+  "version": "0.1.0",
+  "description": "Local-first desktop chess improvement app: import games, analyze mistakes, practice openings, study AI-generated lessons.",
+  "main": "out/main/index.js",
+  "author": "Chess Mentor Studio",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "electron-vite build && electron . --smoke-test"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "chess.js": "^1.4.0",
+    "cm-chessboard": "^8.12.12",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^37.2.0",
+    "electron-vite": "^4.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^7.0.0"
+  }
+}

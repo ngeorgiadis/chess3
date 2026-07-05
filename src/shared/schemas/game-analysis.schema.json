@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chessmentor.local/schemas/game-analysis.schema.json",
+  "title": "Chess Mentor Game Analysis",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gameId",
+    "summary",
+    "criticalMoments",
+    "recommendedTraining"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "gameId": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "string"
+    },
+    "phaseAssessments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "opening": {
+          "type": "string"
+        },
+        "middlegame": {
+          "type": "string"
+        },
+        "endgame": {
+          "type": "string"
+        },
+        "timeManagement": {
+          "type": "string"
+        }
+      }
+    },
+    "criticalMoments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ply",
+          "fen",
+          "playedMove",
+          "recommendedMove",
+          "severity",
+          "themeTags",
+          "explanation"
+        ],
+        "properties": {
+          "ply": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fen": {
+            "type": "string"
+          },
+          "playedMove": {
+            "type": "object",
+            "properties": {
+              "san": {
+                "type": "string"
+              },
+              "uci": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "recommendedMove": {
+            "type": "object",
+            "properties": {
+              "san": {
+                "type": "string"
+              },
+              "uci": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "inaccuracy",
+              "mistake",
+              "blunder",
+              "missed-win",
+              "missed-draw",
+              "strategic-error"
+            ]
+          },
+          "evalLossCp": {
+            "type": "integer"
+          },
+          "themeTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "trainingRule": {
+            "type": "string"
+          },
+          "exerciseSeed": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "recommendedTraining": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "title",
+          "reason"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        }
+      }
+    },
+    "engineProvenance": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}
