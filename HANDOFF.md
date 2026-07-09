@@ -22,6 +22,8 @@ Electron desktop app implementing `chess_training_app_specs/` (v1 scope). Status
 - Openings library (`src/shared/openings.ts`): 13 openings / 31 validated lines, browsable in Openings → “Openings library” tab, one-click add to White/Black repertoire (`repertoire:addOpeningLine`, dedup-safe). ✅
 - `npm test` = build + 24-check smoke test (`electron . --smoke-test`, temp DB) — all pass. Typecheck clean. UI verified live via CDP (board render, click-move, live eval, review, settings preview; no console errors).
 
+- `npm run dev` works: the CSP in `src/main/index.ts` allows `'unsafe-inline'` scripts **in dev only** (the react-refresh preamble @vitejs/plugin-react injects); production CSP stays `script-src 'self'`.
+
 ## Commands
 
 ```

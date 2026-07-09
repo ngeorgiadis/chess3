@@ -92,14 +92,17 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
-  // Strict CSP for all renderer content (04_TECH_ARCHITECTURE.md security)
+  // Strict CSP for all renderer content (04_TECH_ARCHITECTURE.md security).
+  // Dev only: allow the inline react-refresh preamble that @vitejs/plugin-react
+  // injects into index.html, plus the vite dev-server websocket.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const devConnect = isDev ? ' ws://localhost:* http://localhost:*' : ''
+    const scriptSrc = isDev ? `'self' 'unsafe-inline'` : `'self'`
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${devConnect}; object-src 'none'; base-uri 'self'`
+          `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${devConnect}; object-src 'none'; base-uri 'self'`
         ]
       }
     })

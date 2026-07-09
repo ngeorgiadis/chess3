@@ -13624,11 +13624,12 @@ function createWindow() {
 electron.app.whenReady().then(async () => {
   electron.session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const devConnect = isDev ? " ws://localhost:* http://localhost:*" : "";
+    const scriptSrc = isDev ? `'self' 'unsafe-inline'` : `'self'`;
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         "Content-Security-Policy": [
-          `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${devConnect}; object-src 'none'; base-uri 'self'`
+          `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${devConnect}; object-src 'none'; base-uri 'self'`
         ]
       }
     });
