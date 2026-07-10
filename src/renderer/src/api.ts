@@ -4,6 +4,7 @@ import type {
   AppEvent,
   AppSettings,
   AnalysisSummary,
+  BackfillResult,
   EngineProfileRecord,
   EngineRecord,
   ExerciseRecord,
@@ -36,6 +37,9 @@ export const api = {
   settings: {
     get: () => raw['settings:get']() as Promise<AppSettings>,
     set: (patch: Partial<AppSettings>) => raw['settings:set'](patch) as Promise<AppSettings>
+  },
+  identity: {
+    backfill: () => raw['identity:backfill']() as Promise<BackfillResult>
   },
   games: {
     list: (filters?: GameFilters) => raw['games:list'](filters) as Promise<GameRecord[]>,

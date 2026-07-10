@@ -228,6 +228,13 @@ const MIGRATIONS: string[] = [
     body TEXT NOT NULL,
     cached_at TEXT NOT NULL
   );
+  `,
+  // v2 — accuracy columns + repertoire line labels (UX improvement pass)
+  `
+  ALTER TABLE games ADD COLUMN accuracy_white REAL;
+  ALTER TABLE games ADD COLUMN accuracy_black REAL;
+  ALTER TABLE repertoire_nodes ADD COLUMN opening_name TEXT;
+  ALTER TABLE repertoire_nodes ADD COLUMN line_name TEXT;
   `
 ]
 
@@ -276,7 +283,25 @@ export function initDb(dataDir: string): DatabaseSync {
       throw e
     }
   }
+  ensureColumns()
   return db
+}
+
+/**
+ * Defensive, idempotent column additions that don't depend on the `user_version` counter
+ * lining up — some real-world databases (e.g. from an earlier prototype) already carry an
+ * unrelated `user_version`, which would silently skip a purely counter-driven migration.
+ */
+function ensureColumns(): void {
+  const d = db!
+  const add = (table: string, column: string, ddl: string): void => {
+    const cols = d.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    if (!cols.some((c) => c.name === column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+  }
+  add('games', 'accuracy_white', 'accuracy_white REAL')
+  add('games', 'accuracy_black', 'accuracy_black REAL')
+  add('repertoire_nodes', 'opening_name', 'opening_name TEXT')
+  add('repertoire_nodes', 'line_name', 'line_name TEXT')
 }
 
 export function getDb(): DatabaseSync {

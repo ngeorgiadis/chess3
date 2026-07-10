@@ -26,7 +26,9 @@ function rowToGame(row: Record<string, unknown>): GameRecord {
     analysisStatus: row.analysis_status as GameRecord['analysisStatus'],
     plyCount: row.ply_count as number,
     mistakeCount: (row.mistake_count as number) ?? 0,
-    ongoing: Boolean(row.ongoing)
+    ongoing: Boolean(row.ongoing),
+    accuracyWhite: (row.accuracy_white as number) ?? null,
+    accuracyBlack: (row.accuracy_black as number) ?? null
   }
 }
 
@@ -106,8 +108,15 @@ export function getMoves(gameId: string): MoveRecord[] {
 }
 
 export function deleteGame(id: string): void {
-  getDb().prepare('DELETE FROM games WHERE id = ?').run(id)
+  const db = getDb()
+  // Exercises reference mistakes by id with no FK; clean them up before the
+  // game row (and its mistakes, via cascade) disappear.
+  db.prepare(
+    `DELETE FROM exercises WHERE origin_type = 'mistake' AND origin_id IN (SELECT id FROM mistakes WHERE game_id = ?)`
+  ).run(id)
+  db.prepare('DELETE FROM games WHERE id = ?').run(id)
   broadcast({ type: 'games:changed', payload: null })
+  broadcast({ type: 'exercises:changed', payload: null })
 }
 
 export function exportPgn(gameIds: string[]): string {

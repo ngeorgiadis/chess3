@@ -14,16 +14,19 @@ const ACTION_LABELS: Record<string, string> = {
   'time-management': 'Time management'
 }
 
-/** Compute streak: consecutive days (ending today or yesterday) with any training event. */
-function computeStreak(): number {
+function trainingDays(): string[] {
   const rows = getDb()
     .prepare(
       `SELECT DISTINCT substr(created_at, 1, 10) AS day FROM app_events
        WHERE event_type IN ('exercise.completed', 'game.analyzed', 'lesson.published') ORDER BY day DESC LIMIT 60`
     )
     .all() as Array<{ day: string }>
-  if (rows.length === 0) return 0
-  const days = rows.map((r) => r.day)
+  return rows.map((r) => r.day)
+}
+
+/** Consecutive days (ending today or yesterday) with any training event. */
+function computeStreak(days: string[]): number {
+  if (days.length === 0) return 0
   const today = new Date()
   let streak = 0
   for (let i = 0; i < 60; i++) {
@@ -32,6 +35,17 @@ function computeStreak(): number {
     else if (i > 0) break // allow "today not yet trained"
   }
   return streak
+}
+
+/** Last 28 days (oldest first) with a flag for whether any training happened that day. */
+function computeActiveDays(days: string[]): string[] {
+  const today = new Date()
+  const out: string[] = []
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 86_400_000).toISOString().slice(0, 10)
+    if (days.includes(d)) out.push(d)
+  }
+  return out
 }
 
 export function computeTodayPlan(): TodayPlan {
@@ -59,11 +73,14 @@ export function computeTodayPlan(): TodayPlan {
        FROM mistakes WHERE created_at >= ? GROUP BY training_action ORDER BY impact DESC LIMIT 5`
     )
     .all(since) as Array<{ tag: string; count: number; impact: number }>
-  const weaknesses = weaknessRows.map((w) => ({
-    tag: w.tag,
-    count: w.count,
-    evidence: `${w.count} mistakes costing ~${Math.round(w.impact / 100)} pawns total in your recent games`
-  }))
+  const weaknesses = weaknessRows.map((w) => {
+    const pawns = Math.round(w.impact / 100)
+    return {
+      tag: w.tag,
+      count: w.count,
+      evidence: `${w.count} mistake${w.count === 1 ? '' : 's'} costing ~${pawns} pawn${pawns === 1 ? '' : 's'} in your recent games`
+    }
+  })
 
   // Build 3–5 tasks in priority order (01_APP_SPEC.md §2.8)
   if (gameCount === 0) {
@@ -139,12 +156,14 @@ export function computeTodayPlan(): TodayPlan {
     ? `${ACTION_LABELS[weaknesses[0].tag] ?? weaknesses[0].tag}: your biggest leak this month`
     : 'Build the habit: import, analyze, practice'
 
+  const days = trainingDays()
   return {
     date: now().slice(0, 10),
     weeklyTheme,
     tasks: tasks.slice(0, 5),
     weaknesses,
-    streakDays: computeStreak(),
+    streakDays: computeStreak(days),
+    activeDays: computeActiveDays(days),
     dueExercises: dueEx,
     dueRepertoire: dueRep,
     unreviewedGames: unreviewed

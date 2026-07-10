@@ -35,6 +35,21 @@ const STATUS_BADGE: Record<string, { cls: string; label: string }> = {
   failed: { cls: 'red', label: 'failed' }
 }
 
+function canAnalyze(g: GameRecord): boolean {
+  return !g.ongoing && (g.analysisStatus === 'none' || g.analysisStatus === 'failed')
+}
+
+function accuracyCell(g: GameRecord): React.JSX.Element {
+  if (g.accuracyWhite == null && g.accuracyBlack == null) return <span className="muted">—</span>
+  if (g.userColor === 'white') return <span className="mono">{g.accuracyWhite?.toFixed(1) ?? '—'}</span>
+  if (g.userColor === 'black') return <span className="mono">{g.accuracyBlack?.toFixed(1) ?? '—'}</span>
+  return (
+    <span className="mono muted">
+      W {g.accuracyWhite?.toFixed(0) ?? '—'} / B {g.accuracyBlack?.toFixed(0) ?? '—'}
+    </span>
+  )
+}
+
 export function Games(): React.JSX.Element {
   const navigate = useStore((s) => s.navigate)
   const setImportModalOpen = useStore((s) => s.setImportModalOpen)
@@ -43,12 +58,15 @@ export function Games(): React.JSX.Element {
   const [selected, setSelected] = useState<GameRecord | null>(null)
   const [previewFen, setPreviewFen] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const refresh = useCallback(() => {
     void api.games.list(filters).then(setGames)
   }, [filters])
   useEffect(refresh, [refresh])
   useAppEvent(['games:changed', 'job:completed'], refresh)
+  useEffect(() => setChecked(new Set()), [filters])
 
   useEffect(() => {
     setPreviewFen(null)
@@ -64,6 +82,35 @@ export function Games(): React.JSX.Element {
       await api.analysis.queue([game.id])
     } catch (e) {
       setError((e as Error).message)
+    }
+  }
+
+  const analyzable = games.filter(canAnalyze)
+  const allChecked = analyzable.length > 0 && analyzable.every((g) => checked.has(g.id))
+
+  function toggleSelectAll(): void {
+    setChecked(allChecked ? new Set() : new Set(analyzable.map((g) => g.id)))
+  }
+
+  function toggleOne(id: string): void {
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function bulkAnalyze(): Promise<void> {
+    setError(null)
+    setBulkBusy(true)
+    try {
+      await api.analysis.queue([...checked])
+      setChecked(new Set())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBulkBusy(false)
     }
   }
 
@@ -125,6 +172,20 @@ export function Games(): React.JSX.Element {
 
       {error && <div className="callout error" style={{ marginBottom: 10 }}>{error}</div>}
 
+      {games.length > 0 && analyzable.length > 0 && (
+        <div className="row" style={{ marginBottom: 10, justifyContent: 'space-between' }}>
+          <label className="row" style={{ gap: 6 }}>
+            <input type="checkbox" checked={allChecked} onChange={toggleSelectAll} />
+            <span className="muted">Select all unanalyzed ({analyzable.length})</span>
+          </label>
+          {checked.size > 0 && (
+            <button className="small primary" disabled={bulkBusy} onClick={() => void bulkAnalyze()}>
+              {bulkBusy ? 'Queuing…' : `Analyze ${checked.size} selected`}
+            </button>
+          )}
+        </div>
+      )}
+
       {games.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 40 }}>
           <p>Import your games to build a personalized training plan.</p>
@@ -138,6 +199,7 @@ export function Games(): React.JSX.Element {
             <table className="data">
               <thead>
                 <tr>
+                  <th></th>
                   <th>Date</th>
                   <th>White</th>
                   <th>Black</th>
@@ -145,6 +207,7 @@ export function Games(): React.JSX.Element {
                   <th>Speed</th>
                   <th>Opening</th>
                   <th>Mistakes</th>
+                  <th>Accuracy</th>
                   <th>Analysis</th>
                   <th></th>
                 </tr>
@@ -158,6 +221,11 @@ export function Games(): React.JSX.Element {
                       className={`clickable ${selected?.id === g.id ? 'selected' : ''}`}
                       onClick={() => setSelected(g)}
                     >
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {canAnalyze(g) && (
+                          <input type="checkbox" checked={checked.has(g.id)} onChange={() => toggleOne(g.id)} />
+                        )}
+                      </td>
                       <td className="muted">{(g.endedAt ?? g.importedAt).slice(0, 10)}</td>
                       <td>{g.whiteName ?? '?'} {g.whiteRating ? <span className="muted">({g.whiteRating})</span> : null}</td>
                       <td>{g.blackName ?? '?'} {g.blackRating ? <span className="muted">({g.blackRating})</span> : null}</td>
@@ -165,6 +233,7 @@ export function Games(): React.JSX.Element {
                       <td className="muted">{g.timeClass ?? '—'}</td>
                       <td className="muted">{g.openingName ?? g.ecoCode ?? '—'}</td>
                       <td>{g.mistakeCount > 0 ? <span className="badge yellow">{g.mistakeCount}</span> : <span className="muted">—</span>}</td>
+                      <td>{accuracyCell(g)}</td>
                       <td>
                         <span className={`badge ${st.cls}`}>{st.label}</span>
                         {g.ongoing && <span className="badge red" style={{ marginLeft: 4 }}>ongoing</span>}
@@ -227,6 +296,7 @@ export function Games(): React.JSX.Element {
                   <button
                     className="small danger"
                     onClick={() => {
+                      if (!window.confirm(`Delete this game (${selected.whiteName} vs ${selected.blackName})? This also removes its analysis, mistakes, and exercises. This cannot be undone.`)) return
                       void api.games.delete(selected.id).then(() => setSelected(null))
                     }}
                   >

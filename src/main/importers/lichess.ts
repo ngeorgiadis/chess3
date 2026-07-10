@@ -24,7 +24,7 @@ interface LichessGame {
 
 const ONGOING_STATUSES = new Set(['created', 'started'])
 
-function handleGame(g: LichessGame, result: ImportResult): void {
+function handleGame(g: LichessGame, result: ImportResult, knownUsername?: string): void {
   result.gamesSeen++
   if (g.variant && g.variant !== 'standard') return
   if (!g.pgn) {
@@ -51,7 +51,8 @@ function handleGame(g: LichessGame, result: ImportResult): void {
         openingName: g.opening?.name ?? null,
         startedAt: g.createdAt ? new Date(g.createdAt).toISOString() : null,
         endedAt: g.lastMoveAt ? new Date(g.lastMoveAt).toISOString() : null,
-        ongoing: false
+        ongoing: false,
+        knownUsername
       }
     })
     if (outcome.status === 'inserted') {
@@ -123,14 +124,14 @@ export async function importLichess(args: ImportLichessArgs, ctx: JobContext): P
         buffer = buffer.slice(nl + 1)
         if (!line) continue
         try {
-          handleGame(JSON.parse(line) as LichessGame, result)
+          handleGame(JSON.parse(line) as LichessGame, result, username)
         } catch (e) {
           result.failed.push({ sourceRef: 'ndjson-line', reason: (e as Error).message })
         }
         ctx.setProgress(result.gamesSeen, max, `Imported ${result.gamesImported} games…`)
       }
     }
-    if (buffer.trim()) handleGame(JSON.parse(buffer.trim()) as LichessGame, result)
+    if (buffer.trim()) handleGame(JSON.parse(buffer.trim()) as LichessGame, result, username)
   } catch (e) {
     if ((e as Error).name !== 'AbortError') throw e
   }

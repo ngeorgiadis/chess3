@@ -7028,6 +7028,9 @@ const api = {
     get: () => raw["settings:get"](),
     set: (patch) => raw["settings:set"](patch)
   },
+  identity: {
+    backfill: () => raw["identity:backfill"]()
+  },
   games: {
     list: (filters) => raw["games:list"](filters),
     get: (id) => raw["games:get"](id),
@@ -7104,18 +7107,81 @@ const api = {
   },
   onEvent: raw.onEvent
 };
+let ctx = null;
+let enabled = true;
+function setSoundEnabled(on) {
+  enabled = on;
+}
+function getCtx() {
+  if (!enabled) return null;
+  if (!ctx) {
+    const Ctor = window.AudioContext ?? window.webkitAudioContext;
+    if (!Ctor) return null;
+    ctx = new Ctor();
+  }
+  if (ctx.state === "suspended") void ctx.resume();
+  return ctx;
+}
+function tone(freq, duration, startAt, type = "sine", gain = 0.08) {
+  const c = getCtx();
+  if (!c) return;
+  const osc = c.createOscillator();
+  const g = c.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  g.gain.value = gain;
+  g.gain.setValueAtTime(gain, c.currentTime + startAt);
+  g.gain.exponentialRampToValueAtTime(1e-3, c.currentTime + startAt + duration);
+  osc.connect(g);
+  g.connect(c.destination);
+  osc.start(c.currentTime + startAt);
+  osc.stop(c.currentTime + startAt + duration);
+}
+function playSound(kind) {
+  if (!getCtx()) return;
+  switch (kind) {
+    case "move":
+      tone(520, 0.05, 0);
+      break;
+    case "capture":
+      tone(340, 0.07, 0, "triangle");
+      break;
+    case "check":
+      tone(660, 0.08, 0, "square", 0.05);
+      tone(880, 0.09, 0.06, "square", 0.05);
+      break;
+    case "correct":
+      tone(523.25, 0.09, 0);
+      tone(783.99, 0.14, 0.09);
+      break;
+    case "wrong":
+      tone(220, 0.18, 0, "sawtooth", 0.06);
+      break;
+    case "complete":
+      tone(523.25, 0.1, 0);
+      tone(659.25, 0.1, 0.1);
+      tone(783.99, 0.2, 0.2);
+      break;
+  }
+}
 const useStore = create((set, get) => ({
   route: { name: "today" },
   settings: null,
   jobs: [],
   importModalOpen: false,
+  onboardingOpen: false,
   evalEnabled: false,
   evalError: null,
   evalUpdate: null,
   evalFen: null,
   navigate: (route) => set({ route }),
   setImportModalOpen: (open) => set({ importModalOpen: open }),
-  refreshSettings: async () => set({ settings: await api.settings.get() }),
+  setOnboardingOpen: (open) => set({ onboardingOpen: open }),
+  refreshSettings: async () => {
+    const settings = await api.settings.get();
+    setSoundEnabled(settings.soundEnabled);
+    set({ settings });
+  },
   refreshJobs: async () => set({ jobs: await api.jobs.list() }),
   setEvalEnabled: async (on) => {
     try {
@@ -7213,7 +7279,7 @@ function EvalPanel() {
   };
   const current = evalEnabled && evalUpdate && evalUpdate.fen === evalFen ? evalUpdate : null;
   const score = current ? whiteScore(current) : null;
-  const whitePct = score ? 50 + 50 * (2 / (1 + Math.exp(-score.cp / 400)) - 1) : 50;
+  const whitePct2 = score ? 50 + 50 * (2 / (1 + Math.exp(-score.cp / 400)) - 1) : 50;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "eval-panel", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 8 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "switch", title: "Evaluate the currently visible board with your engine", children: [
@@ -7225,7 +7291,7 @@ function EvalPanel() {
     ] }),
     evalError && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { color: "var(--danger)", fontSize: 11 }, children: evalError }),
     evalEnabled && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-outer", title: "White ↔ Black", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-white", style: { width: `${whitePct}%` } }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-outer", title: "White ↔ Black", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-white", style: { width: `${whitePct2}%` } }) }),
       current ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         current.multiPv.slice(0, 2).map((pv) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "eval-line", title: pvText(pv), children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: pv.moveSan ?? pv.moveUci }),
@@ -7303,7 +7369,13 @@ function Sidebar() {
     ] })
   ] });
 }
-function ResultSummary({ result }) {
+function ResultSummary({
+  result,
+  alreadyQueued,
+  onAnalyze,
+  onViewGames
+}) {
+  const [analyzing, setAnalyzing] = reactExports.useState(false);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `callout ${result.gamesImported > 0 ? "success" : "warn"}`, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: result.gamesImported }),
     " games imported, ",
@@ -7325,13 +7397,30 @@ function ResultSummary({ result }) {
           " more"
         ] })
       ] })
+    ] }),
+    result.createdGameIds.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 10, flexWrap: "wrap" }, children: [
+      !alreadyQueued && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          className: "small primary",
+          disabled: analyzing,
+          onClick: () => {
+            setAnalyzing(true);
+            onAnalyze();
+          },
+          children: analyzing ? "Queuing…" : `Analyze ${result.createdGameIds.length} game${result.createdGameIds.length === 1 ? "" : "s"} now`
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: onViewGames, children: "View games" })
     ] })
   ] });
 }
 function ImportModal() {
   const setOpen = useStore((s) => s.setImportModalOpen);
+  const navigate = useStore((s) => s.navigate);
   const jobs = useStore((s) => s.jobs);
   const settings = useStore((s) => s.settings);
+  const refreshSettings = useStore((s) => s.refreshSettings);
   const [tab, setTab] = reactExports.useState("username");
   const [platform, setPlatform] = reactExports.useState("chesscom");
   const [username, setUsername] = reactExports.useState(settings?.chesscomUsername ?? "");
@@ -7364,12 +7453,21 @@ function ImportModal() {
       setBusy(false);
     }
   }
+  async function saveUsernameIfNeeded(p, name) {
+    const key = p === "chesscom" ? "chesscomUsername" : "lichessUsername";
+    if (settings?.[key] === name) return;
+    await api.settings.set({ [key]: name });
+    await refreshSettings();
+    await api.identity.backfill();
+  }
   const startUsernameImport = () => run(async () => {
-    if (!username.trim()) throw new Error("Enter a username first.");
+    const name = username.trim();
+    if (!name) throw new Error("Enter a username first.");
+    await saveUsernameIfNeeded(platform, name);
     let job;
     if (platform === "chesscom") {
       job = await api.import.chesscom({
-        username: username.trim(),
+        username: name,
         maxGames,
         fromMonth: fromMonth || void 0,
         toMonth: toMonth || void 0,
@@ -7378,7 +7476,7 @@ function ImportModal() {
       });
     } else {
       job = await api.import.lichess({
-        username: username.trim(),
+        username: name,
         max: maxGames,
         perfTypes: timeClasses.filter((t) => t !== "daily"),
         analyzeAfterImport: analyzeAfter
@@ -7390,6 +7488,7 @@ function ImportModal() {
     const detected = await api.import.detect(urlText);
     switch (detected.kind) {
       case "chesscom-user": {
+        await saveUsernameIfNeeded("chesscom", detected.username);
         const job = await api.import.chesscom({
           username: detected.username,
           maxGames,
@@ -7399,6 +7498,7 @@ function ImportModal() {
         break;
       }
       case "lichess-user": {
+        await saveUsernameIfNeeded("lichess", detected.username);
         const job = await api.import.lichess({
           username: detected.username,
           max: maxGames,
@@ -7451,8 +7551,19 @@ function ImportModal() {
     const preview = await api.import.previewPgn(text);
     setPgnPreview(preview.games);
   }
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "modal-backdrop", onClick: () => setOpen(false), children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [
+  reactExports.useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape" && !busy) setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, setOpen]);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "modal-backdrop", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "modal", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Import games" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6, marginBottom: 10 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: analyzeAfter, onChange: (e) => setAnalyzeAfter(e.target.checked) }),
+      "Analyze after import (requires a configured engine)"
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tabs", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: tab === "username" ? "active" : "", onClick: () => setTab("username"), children: "Username" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: tab === "url" ? "active" : "", onClick: () => setTab("url"), children: "URL / paste" }),
@@ -7549,12 +7660,19 @@ function ImportModal() {
       ] })
     ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { marginTop: 14 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: analyzeAfter, onChange: (e) => setAnalyzeAfter(e.target.checked) }),
-        "Analyze after import (requires a configured engine)"
-      ] }),
       error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", children: error }),
-      directResult && /* @__PURE__ */ jsxRuntimeExports.jsx(ResultSummary, { result: directResult }),
+      directResult && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        ResultSummary,
+        {
+          result: directResult,
+          alreadyQueued: analyzeAfter,
+          onAnalyze: () => void api.analysis.queue(directResult.createdGameIds),
+          onViewGames: () => {
+            navigate({ name: "games" });
+            setOpen(false);
+          }
+        }
+      ),
       watchedJob && watchedJob.status === "running" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginBottom: 4 }, children: [
           watchedJob.progressLabel ?? "Working…",
@@ -7575,10 +7693,141 @@ function ImportModal() {
         ) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", style: { marginTop: 6 }, onClick: () => void api.analysis.cancel(watchedJob.id), children: "Cancel import" })
       ] }),
-      jobResult && /* @__PURE__ */ jsxRuntimeExports.jsx(ResultSummary, { result: jobResult }),
+      jobResult && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        ResultSummary,
+        {
+          result: jobResult,
+          alreadyQueued: analyzeAfter,
+          onAnalyze: () => void api.analysis.queue(jobResult.createdGameIds),
+          onViewGames: () => {
+            navigate({ name: "games" });
+            setOpen(false);
+          }
+        }
+      ),
       watchedJob?.status === "failed" && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", children: watchedJob.error?.message ?? "Import failed." }),
       watchedJob?.status === "cancelled" && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout warn", children: "Import cancelled." }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "flex-end" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setOpen(false), children: "Close" }) })
+    ] })
+  ] }) });
+}
+const ONBOARDING_DONE_KEY = "cms-onboarding-done";
+function Onboarding() {
+  const settings = useStore((s) => s.settings);
+  const refreshSettings = useStore((s) => s.refreshSettings);
+  const setOnboardingOpen = useStore((s) => s.setOnboardingOpen);
+  const setImportModalOpen = useStore((s) => s.setImportModalOpen);
+  const navigate = useStore((s) => s.navigate);
+  const [step, setStep] = reactExports.useState("identity");
+  const [chesscomUsername, setChesscomUsername] = reactExports.useState(settings?.chesscomUsername ?? "");
+  const [lichessUsername, setLichessUsername] = reactExports.useState(settings?.lichessUsername ?? "");
+  const [ratingCurrent, setRatingCurrent] = reactExports.useState(settings?.ratingCurrent ?? 1500);
+  const [saving, setSaving] = reactExports.useState(false);
+  function finish() {
+    try {
+      window.localStorage.setItem(ONBOARDING_DONE_KEY, "true");
+    } catch {
+    }
+    setOnboardingOpen(false);
+  }
+  async function saveIdentity() {
+    setSaving(true);
+    try {
+      await api.settings.set({
+        chesscomUsername: chesscomUsername.trim(),
+        lichessUsername: lichessUsername.trim(),
+        ratingCurrent
+      });
+      await refreshSettings();
+      if (chesscomUsername.trim() || lichessUsername.trim()) await api.identity.backfill();
+      setStep("import");
+    } finally {
+      setSaving(false);
+    }
+  }
+  const steps = ["identity", "import", "engine"];
+  const stepIndex = steps.indexOf(step);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "modal-backdrop", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "modal", style: { width: 520 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", marginBottom: 4 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { style: { margin: 0 }, children: "Welcome to Chess Mentor Studio" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: finish, children: "Skip setup" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginBottom: 16 }, children: [
+      "Step ",
+      stepIndex + 1,
+      " of ",
+      steps.length
+    ] }),
+    step === "identity" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Tell us who you are so we can tell your games apart from your opponents' — this drives everything else (which side to review, whose mistakes to train)." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", children: [
+        "Chess.com username",
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "input",
+          {
+            value: chesscomUsername,
+            onChange: (e) => setChesscomUsername(e.target.value),
+            placeholder: "your-username (optional)"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", children: [
+        "Lichess username",
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "input",
+          {
+            value: lichessUsername,
+            onChange: (e) => setLichessUsername(e.target.value),
+            placeholder: "your-username (optional)"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { width: 140 }, children: [
+        "Current rating",
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "input",
+          {
+            type: "number",
+            value: ratingCurrent,
+            onChange: (e) => setRatingCurrent(parseInt(e.target.value) || 1500)
+          }
+        )
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "flex-end", marginTop: 8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", disabled: saving, onClick: () => void saveIdentity(), children: saving ? "Saving…" : "Continue" }) })
+    ] }),
+    step === "import" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import your recent games from Chess.com or Lichess, or paste a PGN — this builds your training plan." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            className: "primary",
+            onClick: () => {
+              setImportModalOpen(true);
+              setStep("engine");
+            },
+            children: "Import my games…"
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setStep("engine"), children: "Skip for now" })
+      ] })
+    ] }),
+    step === "engine" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Add a local UCI engine (e.g. Stockfish, free at stockfishchess.org) so imported games can be analyzed for mistakes on this machine. Nothing is sent anywhere — analysis runs locally." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            className: "primary",
+            onClick: () => {
+              navigate({ name: "engines" });
+              finish();
+            },
+            children: "Set up an engine…"
+          }
+        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: finish, children: "Skip for now" })
+      ] })
     ] })
   ] }) });
 }
@@ -7590,13 +7839,66 @@ const ACTION_LABELS = {
   strategy: "Strategy",
   "time-management": "Time management"
 };
+function planStorageKey(date) {
+  return `cms-today-plan-${date}`;
+}
+function loadOrInitStoredTasks(plan) {
+  const key = planStorageKey(plan.date);
+  try {
+    const raw2 = window.localStorage.getItem(key);
+    if (raw2) {
+      const stored = JSON.parse(raw2);
+      const known = new Set(stored.map((t) => t.id));
+      const merged = [...stored, ...plan.tasks.filter((t) => !known.has(t.id)).map((t) => ({ id: t.id, title: t.title }))];
+      if (merged.length !== stored.length) window.localStorage.setItem(key, JSON.stringify(merged));
+      return merged;
+    }
+  } catch {
+  }
+  const fresh = plan.tasks.map((t) => ({ id: t.id, title: t.title }));
+  try {
+    window.localStorage.setItem(key, JSON.stringify(fresh));
+  } catch {
+  }
+  return fresh;
+}
+function StreakCalendar({ activeDays, streakDays }) {
+  const active = reactExports.useMemo(() => new Set(activeDays), [activeDays]);
+  const todayStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const days = reactExports.useMemo(() => {
+    const out = [];
+    for (let i = 27; i >= 0; i--) out.push(new Date(Date.now() - i * 864e5).toISOString().slice(0, 10));
+    return out;
+  }, []);
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 3, flexWrap: "wrap" }, children: days.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "span",
+      {
+        title: `${d}${active.has(d) ? " · trained" : ""}`,
+        style: {
+          width: 11,
+          height: 11,
+          borderRadius: 3,
+          background: active.has(d) ? "var(--accent)" : "var(--bg-panel)",
+          border: d === todayStr ? "1px solid var(--accent-strong)" : "1px solid var(--border)"
+        }
+      },
+      d
+    )) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginTop: 4 }, children: streakDays > 0 ? `${streakDays} day streak — keep it going` : "Train today to start a streak" })
+  ] });
+}
 function Today() {
   const [plan, setPlan] = reactExports.useState(null);
+  const [storedTasks, setStoredTasks] = reactExports.useState([]);
   const navigate = useStore((s) => s.navigate);
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
   const settings = useStore((s) => s.settings);
   const refresh = reactExports.useCallback(() => {
-    void api.plan.today().then(setPlan);
+    void api.plan.today().then((p) => {
+      setPlan(p);
+      setStoredTasks(loadOrInitStoredTasks(p));
+    });
   }, []);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["games:changed", "exercises:changed", "repertoire:changed", "lessons:changed", "job:completed"], refresh);
@@ -7626,6 +7928,9 @@ function Today() {
   }
   if (!plan) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading your plan…" });
   const firstTask = plan.tasks[0];
+  const liveIds = new Set(plan.tasks.map((t) => t.id));
+  const completedToday = storedTasks.filter((t) => !liveIds.has(t.id));
+  const totalToday = storedTasks.length;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Today" }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "subtitle", children: [
@@ -7635,19 +7940,34 @@ function Today() {
     ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "stretch", marginBottom: 16, flexWrap: "wrap" }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 2, minWidth: 340 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Today's training plan" }),
-        plan.tasks.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Nothing due right now. Import games or start a lesson to build your plan." }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", children: plan.tasks.map((task, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("b", { children: [
-              i + 1,
-              ". ",
-              task.title
-            ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: task.detail })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => openTask(task), children: "Open" })
-        ] }, task.id)) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Today's training plan" }),
+          totalToday > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "badge green", children: [
+            completedToday.length,
+            " of ",
+            totalToday,
+            " done"
+          ] })
+        ] }),
+        plan.tasks.length === 0 && completedToday.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Nothing due right now. Import games or start a lesson to build your plan." }),
+        plan.tasks.length === 0 && completedToday.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout success", style: { marginBottom: 10 }, children: "Today's plan is complete. Nice work — come back tomorrow, or keep training below." }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", children: [
+          completedToday.map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "space-between", opacity: 0.55 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { textDecoration: "line-through" }, children: [
+            "✓ ",
+            t.title
+          ] }) }, t.id)),
+          plan.tasks.map((task, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("b", { children: [
+                i + 1,
+                ". ",
+                task.title
+              ] }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: task.detail })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => openTask(task), children: "Open" })
+          ] }, task.id))
+        ] }),
         firstTask && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", style: { marginTop: 14 }, onClick: () => openTask(firstTask), children: "Start today's session" })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 220 }, children: [
@@ -7666,28 +7986,45 @@ function Today() {
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "rating goal" })
           ] })
         ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(StreakCalendar, { activeDays: plan.activeDays, streakDays: plan.streakDays }) }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { marginTop: 12, gap: 4 }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
             plan.dueExercises,
-            " exercises due"
+            " exercise",
+            plan.dueExercises === 1 ? "" : "s",
+            " due"
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
             plan.dueRepertoire,
-            " opening moves due"
+            " opening move",
+            plan.dueRepertoire === 1 ? "" : "s",
+            " due"
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
             plan.unreviewedGames,
-            " analyzed games to review"
+            " analyzed game",
+            plan.unreviewedGames === 1 ? "" : "s",
+            " to review"
           ] })
         ] })
       ] })
     ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Current weaknesses by impact" }),
-      plan.weaknesses.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No diagnosis yet. Import and analyze games — mistakes become your personal curriculum." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: plan.weaknesses.map((w) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: ACTION_LABELS[w.tag] ?? w.tag }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: w.evidence })
-      ] }, w.tag)) })
+      plan.weaknesses.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No diagnosis yet. Import and analyze games — mistakes become your personal curriculum." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: plan.weaknesses.map((w) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "div",
+        {
+          className: "row clickable",
+          style: { gap: 10, cursor: "pointer" },
+          onClick: () => navigate({ name: "exercises", tag: w.tag }),
+          title: `Practice ${ACTION_LABELS[w.tag] ?? w.tag} exercises`,
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", style: { flexShrink: 0 }, children: ACTION_LABELS[w.tag] ?? w.tag }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: w.evidence })
+          ]
+        },
+        w.tag
+      )) })
     ] })
   ] });
 }
@@ -13824,6 +14161,7 @@ function Board({
                 const promo = result.piece.charAt(1);
                 const probe2 = new Chess(fenRef.current);
                 const mv2 = probe2.move({ from, to, promotion: promo });
+                playSound(probe2.inCheck() ? "check" : mv2.captured ? "capture" : "move");
                 emitMove(mv2.from + mv2.to + promo, mv2.san);
               } else {
                 syncToProp();
@@ -13831,6 +14169,7 @@ function Board({
             });
             return true;
           }
+          playSound(probe.inCheck() ? "check" : mv.captured ? "capture" : "move");
           emitMove(mv.from + mv.to, mv.san);
           return true;
         }
@@ -13895,6 +14234,20 @@ const STATUS_BADGE = {
   done: { cls: "green", label: "analyzed" },
   failed: { cls: "red", label: "failed" }
 };
+function canAnalyze(g) {
+  return !g.ongoing && (g.analysisStatus === "none" || g.analysisStatus === "failed");
+}
+function accuracyCell(g) {
+  if (g.accuracyWhite == null && g.accuracyBlack == null) return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" });
+  if (g.userColor === "white") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyWhite?.toFixed(1) ?? "—" });
+  if (g.userColor === "black") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyBlack?.toFixed(1) ?? "—" });
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "mono muted", children: [
+    "W ",
+    g.accuracyWhite?.toFixed(0) ?? "—",
+    " / B ",
+    g.accuracyBlack?.toFixed(0) ?? "—"
+  ] });
+}
 function Games() {
   const navigate = useStore((s) => s.navigate);
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
@@ -13903,11 +14256,14 @@ function Games() {
   const [selected, setSelected] = reactExports.useState(null);
   const [previewFen, setPreviewFen] = reactExports.useState(null);
   const [error, setError] = reactExports.useState(null);
+  const [checked, setChecked] = reactExports.useState(/* @__PURE__ */ new Set());
+  const [bulkBusy, setBulkBusy] = reactExports.useState(false);
   const refresh = reactExports.useCallback(() => {
     void api.games.list(filters).then(setGames);
   }, [filters]);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["games:changed", "job:completed"], refresh);
+  reactExports.useEffect(() => setChecked(/* @__PURE__ */ new Set()), [filters]);
   reactExports.useEffect(() => {
     setPreviewFen(null);
     if (!selected) return;
@@ -13921,6 +14277,31 @@ function Games() {
       await api.analysis.queue([game.id]);
     } catch (e) {
       setError(e.message);
+    }
+  }
+  const analyzable = games.filter(canAnalyze);
+  const allChecked = analyzable.length > 0 && analyzable.every((g) => checked.has(g.id));
+  function toggleSelectAll() {
+    setChecked(allChecked ? /* @__PURE__ */ new Set() : new Set(analyzable.map((g) => g.id)));
+  }
+  function toggleOne(id) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  async function bulkAnalyze() {
+    setError(null);
+    setBulkBusy(true);
+    try {
+      await api.analysis.queue([...checked]);
+      setChecked(/* @__PURE__ */ new Set());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBulkBusy(false);
     }
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
@@ -13992,12 +14373,24 @@ function Games() {
       )
     ] }),
     error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginBottom: 10 }, children: error }),
+    games.length > 0 && analyzable.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 10, justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: allChecked, onChange: toggleSelectAll }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+          "Select all unanalyzed (",
+          analyzable.length,
+          ")"
+        ] })
+      ] }),
+      checked.size > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", disabled: bulkBusy, onClick: () => void bulkAnalyze(), children: bulkBusy ? "Queuing…" : `Analyze ${checked.size} selected` })
+    ] }),
     games.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 40 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import your games to build a personalized training plan." }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setImportModalOpen(true), children: "Import games" })
     ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start" }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", {}),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Date" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "White" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Black" }),
@@ -14005,6 +14398,7 @@ function Games() {
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Speed" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Mistakes" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Accuracy" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Analysis" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
         ] }) }),
@@ -14016,6 +14410,7 @@ function Games() {
               className: `clickable ${selected?.id === g.id ? "selected" : ""}`,
               onClick: () => setSelected(g),
               children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { onClick: (e) => e.stopPropagation(), children: canAnalyze(g) && /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: checked.has(g.id), onChange: () => toggleOne(g.id) }) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: (g.endedAt ?? g.importedAt).slice(0, 10) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
                   g.whiteName ?? "?",
@@ -14039,6 +14434,7 @@ function Games() {
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.timeClass ?? "—" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.openingName ?? g.ecoCode ?? "—" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: g.mistakeCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: g.mistakeCount }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: accuracyCell(g) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${st.cls}`, children: st.label }),
                   g.ongoing && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge red", style: { marginLeft: 4 }, children: "ongoing" })
@@ -14094,6 +14490,7 @@ function Games() {
               {
                 className: "small danger",
                 onClick: () => {
+                  if (!window.confirm(`Delete this game (${selected.whiteName} vs ${selected.blackName})? This also removes its analysis, mistakes, and exercises. This cannot be undone.`)) return;
                   void api.games.delete(selected.id).then(() => setSelected(null));
                 },
                 children: "Delete"
@@ -14112,6 +14509,13 @@ const SEVERITY_LABEL = {
   "missed-win": "Missed win",
   "missed-draw": "Missed draw"
 };
+const SEVERITY_GLYPH = {
+  blunder: { glyph: "??", cls: "sev-blunder" },
+  "missed-win": { glyph: "??", cls: "sev-blunder" },
+  mistake: { glyph: "?", cls: "sev-mistake" },
+  "missed-draw": { glyph: "?", cls: "sev-mistake" },
+  inaccuracy: { glyph: "?!", cls: "sev-inaccuracy" }
+};
 function whiteCp(a) {
   const best = a.multiPv[0];
   if (!best) return 0;
@@ -14119,21 +14523,33 @@ function whiteCp(a) {
   if (a.sideToMove === "b") cp = -cp;
   return Math.max(-800, Math.min(800, cp));
 }
+function whitePct(a) {
+  if (!a) return 50;
+  const cp = whiteCp(a);
+  return 50 + 50 * (2 / (1 + Math.exp(-cp / 400)) - 1);
+}
 function EvalGraph({
   analyses,
+  mistakes,
   currentPly,
   onSelect
 }) {
   const width = 800;
-  const height = 90;
+  const height = 140;
   const n = analyses.length;
   if (n < 2) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No evaluation data." });
-  const points = analyses.map((a, i) => {
-    const x = i / (n - 1) * width;
-    const y = height / 2 - whiteCp(a) / 800 * (height / 2 - 6);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  const cursorX = currentPly / (n - 1) * width;
+  const yOf = (a) => height / 2 - whiteCp(a) / 800 * (height / 2 - 6);
+  const xOf = (i) => i / (n - 1) * width;
+  const points = analyses.map((a, i) => `${xOf(i).toFixed(1)},${yOf(a).toFixed(1)}`);
+  const areaPoints = [`0,${height / 2}`, ...points, `${width},${height / 2}`].join(" ");
+  const cursorX = xOf(currentPly);
+  const dots = mistakes.map((m) => {
+    const idx = analyses.findIndex((a) => a.ply === m.ply);
+    if (idx < 0) return null;
+    const sev = SEVERITY_GLYPH[m.severity];
+    const color = sev.cls === "sev-blunder" ? "var(--danger)" : sev.cls === "sev-mistake" ? "var(--warn)" : "var(--info)";
+    return { x: xOf(idx), y: yOf(analyses[idx]), color, m };
+  }).filter((d) => d !== null);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(
     "svg",
     {
@@ -14148,11 +14564,38 @@ function EvalGraph({
       style: { cursor: "pointer" },
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: 0, y1: height / 2, x2: width, y2: height / 2, stroke: "var(--border)", strokeWidth: 1 }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("polygon", { points: areaPoints, fill: "var(--info)", opacity: 0.16, stroke: "none" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: points.join(" "), fill: "none", stroke: "var(--info)", strokeWidth: 2 }),
+        dots.map((d, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: d.x, cy: d.y, r: 4.5, fill: d.color, stroke: "var(--bg-raised)", strokeWidth: 1.5, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("title", { children: [
+          "Move ",
+          Math.ceil(d.m.ply / 2),
+          " · ",
+          SEVERITY_LABEL[d.m.severity]
+        ] }) }, i)),
         /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: cursorX, y1: 0, x2: cursorX, y2: height, stroke: "var(--accent)", strokeWidth: 2 })
       ]
     }
   );
+}
+function AccuracySummary({ game, mistakes }) {
+  if (game.accuracyWhite == null && game.accuracyBlack == null) return null;
+  const counts = {};
+  for (const m of mistakes) counts[m.severity] = (counts[m.severity] ?? 0) + 1;
+  const summaryBits = [];
+  if (counts.blunder || counts["missed-win"]) summaryBits.push(`${(counts.blunder ?? 0) + (counts["missed-win"] ?? 0)} blunder(s)`);
+  if (counts.mistake || counts["missed-draw"]) summaryBits.push(`${(counts.mistake ?? 0) + (counts["missed-draw"] ?? 0)} mistake(s)`);
+  if (counts.inaccuracy) summaryBits.push(`${counts.inaccuracy} inaccuracy(-ies)`);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { marginBottom: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "accuracy-row", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "accuracy-pill", children: game.accuracyWhite != null ? game.accuracyWhite.toFixed(1) : "—" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "White accuracy" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "accuracy-pill", children: game.accuracyBlack != null ? game.accuracyBlack.toFixed(1) : "—" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Black accuracy" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: summaryBits.length > 0 ? summaryBits.join(" · ") : "No flagged mistakes" })
+  ] }) });
 }
 function Review({ gameId }) {
   const navigate = useStore((s) => s.navigate);
@@ -14163,6 +14606,9 @@ function Review({ gameId }) {
   const [currentPly, setCurrentPly] = reactExports.useState(0);
   const [revealed, setRevealed] = reactExports.useState(false);
   const [notice, setNotice] = reactExports.useState(null);
+  const [tryMode, setTryMode] = reactExports.useState(false);
+  const [tryFeedback, setTryFeedback] = reactExports.useState(null);
+  const [autoplay, setAutoplay] = reactExports.useState(false);
   reactExports.useEffect(() => {
     void api.games.get(gameId).then(setGame);
     void api.games.moves(gameId).then(setMoves);
@@ -14180,7 +14626,20 @@ function Review({ gameId }) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [moves.length]);
-  reactExports.useEffect(() => setRevealed(false), [currentPly]);
+  reactExports.useEffect(() => {
+    setRevealed(false);
+    setTryMode(false);
+    setTryFeedback(null);
+  }, [currentPly]);
+  reactExports.useEffect(() => {
+    if (!autoplay) return;
+    if (currentPly >= moves.length) {
+      setAutoplay(false);
+      return;
+    }
+    const t = setTimeout(() => setCurrentPly((p) => Math.min(moves.length, p + 1)), 900);
+    return () => clearTimeout(t);
+  }, [autoplay, currentPly, moves.length]);
   const mistakeByPly = reactExports.useMemo(() => new Map(mistakes.map((m) => [m.ply, m])), [mistakes]);
   const analysisByPly = reactExports.useMemo(() => new Map(analyses.map((a) => [a.ply, a])), [analyses]);
   if (!game) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
@@ -14202,6 +14661,25 @@ function Review({ gameId }) {
       }
     ] : []
   ] : [];
+  function jumpToMistake(direction) {
+    if (direction === 1) {
+      const next = mistakes.find((m) => m.ply > currentPly);
+      if (next) setCurrentPly(next.ply);
+    } else {
+      const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly);
+      if (prevMs) setCurrentPly(prevMs.ply);
+    }
+  }
+  function handleTryMove(uci, san) {
+    if (!upcomingMistake) return;
+    if (uci === upcomingMistake.betterMoveUci) {
+      setTryFeedback(`✓ Correct — ${san} was the engine's top choice.`);
+      setRevealed(true);
+      setTryMode(false);
+    } else {
+      setTryFeedback(`${san} isn't the engine's top choice. Try again, or reveal what happened.`);
+    }
+  }
   async function createExercise(m) {
     try {
       await api.exercises.fromMistake(m.id);
@@ -14237,53 +14715,95 @@ function Review({ gameId }) {
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => navigate({ name: "games" }), children: "← Games" })
     ] }),
     analyses.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout warn", style: { marginBottom: 12 }, children: "This game has no engine analysis yet. Queue it from the Games screen to see mistakes and coaching." }),
+    analyses.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(AccuracySummary, { game, mistakes }),
     notice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout", style: { marginBottom: 12 }, children: notice }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 16 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 230, flexShrink: 0, maxHeight: 560, overflowY: "auto" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Moves" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "move-list", children: moves.map((m) => {
           const mk = mistakeByPly.get(m.ply);
+          const before = analysisByPly.get(m.ply - 1);
+          const isBest = !mk && before?.multiPv[0]?.moveUci === m.uci;
+          const glyph = mk ? SEVERITY_GLYPH[mk.severity] : isBest ? { glyph: "✓", cls: "sev-best" } : null;
           return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
             m.color === "white" && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "num", children: [
               m.moveNumber,
               "."
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "span",
               {
                 className: `mv ${currentPly === m.ply ? "current" : ""} ${mk ? mk.severity.replace("missed-win", "blunder").replace("missed-draw", "blunder") : ""}`,
                 onClick: () => setCurrentPly(m.ply),
-                children: m.san
+                title: mk ? SEVERITY_LABEL[mk.severity] : isBest ? "Best move" : void 0,
+                children: [
+                  m.san,
+                  glyph && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `mv-glyph ${glyph.cls}`, children: glyph.glyph })
+                ]
               }
             )
           ] }, m.ply);
         }) })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: "0 1 520px", minWidth: 320 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          Board,
-          {
-            fen,
-            orientation,
-            lastMove,
-            lastMoveSeverity: mistakeHere?.severity ?? null,
-            arrows: boardArrows,
-            maxWidth: 520
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 8, justifyContent: "center" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 8 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "div",
+            {
+              className: "eval-bar-vert-outer",
+              style: { height: "min(52vh, 480px)" },
+              title: "Static eval from stored analysis (White ↔ Black)",
+              children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-vert-white", style: { height: `${whitePct(positionAnalysis)}%` } })
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            Board,
+            {
+              fen,
+              orientation,
+              interactive: tryMode,
+              onMove: tryMode ? handleTryMove : void 0,
+              lastMove,
+              lastMoveSeverity: mistakeHere?.severity ?? null,
+              arrows: boardArrows,
+              maxWidth: 500
+            }
+          ) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 8, justifyContent: "center", flexWrap: "wrap" }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(0), children: "⏮" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.max(0, currentPly - 1)), children: "◀" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              title: "Previous critical moment",
+              disabled: !mistakes.some((m) => m.ply < currentPly),
+              onClick: () => jumpToMistake(-1),
+              children: "⏴!"
+            }
+          ),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", style: { minWidth: 90, textAlign: "center" }, children: [
-            "ply ",
+            "Move ",
             currentPly,
             "/",
             moves.length
           ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              title: "Next critical moment",
+              disabled: !mistakes.some((m) => m.ply > currentPly),
+              onClick: () => jumpToMistake(1),
+              children: "!⏵"
+            }
+          ),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.min(moves.length, currentPly + 1)), children: "▶" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(moves.length), children: "⏭" })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(moves.length), children: "⏭" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${autoplay ? "primary" : ""}`, onClick: () => setAutoplay((a) => !a), children: autoplay ? "⏸ Pause" : "▶ Autoplay" })
         ] }),
-        analyses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(EvalGraph, { analyses, currentPly, onSelect: setCurrentPly }) })
+        analyses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(EvalGraph, { analyses, mistakes, currentPly, onSelect: setCurrentPly }) })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 260 }, children: [
         upcomingMistake && !revealed && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
@@ -14293,7 +14813,11 @@ function Review({ gameId }) {
             " ",
             "Before revealing: find your candidate moves. What is forcing? What changed after the last move?"
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setRevealed(true), children: "Compare with what happened" })
+          tryFeedback && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `callout ${tryFeedback.startsWith("✓") ? "success" : "warn"}`, style: { marginBottom: 8 }, children: tryFeedback }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
+            !tryMode && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setTryMode(true), children: "Try it on the board" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setRevealed(true), children: "Compare with what happened" })
+          ] })
         ] }),
         mistakeHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
@@ -14717,7 +15241,6 @@ function Practice({ due, onDone }) {
       void api.repertoire.attempt(node2.id, wrongTries === 0 && !showHint);
       setResultFen(fenAfterMove(node2.fenBefore, uci));
       setFeedback(`✓ ${san} is your repertoire move.${node2.comment ? " " + node2.comment : ""}`);
-      setTimeout(advance, 1200);
     } else {
       setWrongTries(wrongTries + 1);
       setFeedback(`${san} is not the line you chose to play here. ${wrongTries === 0 ? "Try once more." : ""}`);
@@ -14728,8 +15251,15 @@ function Practice({ due, onDone }) {
     void api.repertoire.attempt(node2.id, false);
     setResultFen(fenAfterMove(node2.fenBefore, node2.moveUci));
     setFeedback(`The repertoire move is ${node2.moveSan}.`);
-    setTimeout(advance, 1600);
   }
+  reactExports.useEffect(() => {
+    if (!resultFen) return;
+    const handler = (e) => {
+      if (e.key === "Enter" || e.key === " ") advance();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [resultFen]);
   const lastMove = resultFen ? { from: node2.moveUci.slice(0, 2), to: node2.moveUci.slice(2, 4) } : opponentNode ? { from: opponentNode.moveUci.slice(0, 2), to: opponentNode.moveUci.slice(2, 4) } : null;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 18 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: "0 1 480px", minWidth: 300 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -14762,6 +15292,7 @@ function Practice({ due, onDone }) {
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
         !showHint && !resultFen && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setShowHint(true), children: "Hint" }),
         !resultFen && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: reveal, children: "Show move" }),
+        resultFen && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: advance, children: "Next →" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: onDone, children: "Stop practice" })
       ] })
     ] })
@@ -14911,13 +15442,34 @@ function Openings() {
     ).length,
     [nodes]
   );
-  const sorted = reactExports.useMemo(
-    () => [...nodes].sort((a, b) => moveNumberOf(a) - moveNumberOf(b) || a.fenBefore.localeCompare(b.fenBefore)),
-    [nodes]
-  );
+  const groups = reactExports.useMemo(() => {
+    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    const map = /* @__PURE__ */ new Map();
+    for (const n of nodes) {
+      const openingName = n.openingName ?? "Other lines";
+      const key = `${openingName}|||${n.lineName ?? ""}`;
+      if (!map.has(key)) map.set(key, { key, openingName, lineName: n.lineName, nodes: [], dueCount: 0 });
+      const g = map.get(key);
+      g.nodes.push(n);
+      if (n.dueAt && n.dueAt <= nowIso && n.fenBefore.split(" ")[1] === (n.color === "white" ? "w" : "b")) {
+        g.dueCount++;
+      }
+    }
+    for (const g of map.values()) {
+      g.nodes.sort((a, b) => moveNumberOf(a) - moveNumberOf(b) || a.fenBefore.localeCompare(b.fenBefore));
+    }
+    return [...map.values()].sort(
+      (a, b) => a.openingName.localeCompare(b.openingName) || (a.lineName ?? "").localeCompare(b.lineName ?? "")
+    );
+  }, [nodes]);
   async function startPractice() {
     const due = await api.repertoire.due();
     setPractice(due.filter((n) => n.color === color));
+  }
+  async function practiceGroup(g) {
+    const due = await api.repertoire.due();
+    const ids = new Set(g.nodes.map((n) => n.id));
+    setPractice(due.filter((n) => n.color === color && ids.has(n.id)));
   }
   const previewFenAfter = reactExports.useMemo(() => {
     if (!selected) return null;
@@ -14969,7 +15521,7 @@ function Openings() {
           ")"
         ] })
       ] }),
-      sorted.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 36 }, children: [
+      groups.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 36 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { children: [
           "No repertoire lines yet for ",
           color,
@@ -14977,54 +15529,72 @@ function Openings() {
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: "Open a game review and click “Add opening line to repertoire”, or analyze games to find where you leave book." })
       ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start" }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Move" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Your move" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Priority" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Due" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
-          ] }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: sorted.map((n) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "tr",
-            {
-              className: `clickable ${selected?.id === n.id ? "selected" : ""}`,
-              onClick: () => setSelected(n),
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
-                  moveNumberOf(n),
-                  "."
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "mono", children: /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: n.moveSan }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${n.status === "known" ? "green" : n.status === "lapsed" ? "red" : "blue"}`, children: n.status }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "select",
-                  {
-                    value: n.priority,
-                    onClick: (e) => e.stopPropagation(),
-                    onChange: (e) => void api.repertoire.setPriority(n.id, e.target.value),
-                    children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
-                  }
-                ) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: n.dueAt ? n.dueAt.slice(0, 10) : "—" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    className: "small danger",
-                    onClick: (e) => {
-                      e.stopPropagation();
-                      void api.repertoire.delete(n.id);
-                    },
-                    children: "✕"
-                  }
-                ) })
-              ]
-            },
-            n.id
-          )) })
-        ] }) }),
-        selected && previewFenAfter && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: groups.map((g) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", marginBottom: 8 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { style: { margin: 0 }, children: [
+              g.openingName,
+              g.lineName && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                " — ",
+                g.lineName
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "small primary", disabled: g.dueCount === 0, onClick: () => void practiceGroup(g), children: [
+              "Practice this line (",
+              g.dueCount,
+              ")"
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Move" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Your move" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Priority" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Due" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
+            ] }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: g.nodes.map((n) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "tr",
+              {
+                className: `clickable ${selected?.id === n.id ? "selected" : ""}`,
+                onClick: () => setSelected(n),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
+                    moveNumberOf(n),
+                    "."
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "mono", children: /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: n.moveSan }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${n.status === "known" ? "green" : n.status === "lapsed" ? "red" : "blue"}`, children: n.status }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "select",
+                    {
+                      value: n.priority,
+                      onClick: (e) => e.stopPropagation(),
+                      onChange: (e) => void api.repertoire.setPriority(n.id, e.target.value),
+                      children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
+                    }
+                  ) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: n.dueAt ? n.dueAt.slice(0, 10) : "—" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      className: "small danger",
+                      title: "Delete this move and everything after it in the line",
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        if (!window.confirm(`Remove ${n.moveSan} from your ${color} repertoire? Moves that follow it in this line are removed too.`)) return;
+                        void api.repertoire.delete(n.id);
+                      },
+                      children: "✕"
+                    }
+                  ) })
+                ]
+              },
+              n.id
+            )) })
+          ] })
+        ] }, g.key)) }),
+        selected && previewFenAfter && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0, position: "sticky", top: 0 }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
             "After ",
             selected.moveSan
@@ -15175,6 +15745,7 @@ function PuzzleBoard({
     if (uci === expected) {
       let next = applyMove(position, uci);
       let idx = solutionIdx + 1;
+      playSound("move");
       if (idx < solution.length) {
         const reply = solution[idx].moveUci;
         try {
@@ -15191,6 +15762,7 @@ function PuzzleBoard({
     } else {
       setFailedOnce(true);
       setStatus("wrong");
+      playSound("wrong");
     }
   }
   function showSolution() {
@@ -15530,22 +16102,49 @@ function LessonPlayer({ lessonId }) {
     )
   ] });
 }
-function Exercises() {
+function Exercises({ initialTag }) {
   const [all, setAll] = reactExports.useState([]);
+  const [tagFilter, setTagFilter] = reactExports.useState(initialTag ?? null);
   const [session, setSession] = reactExports.useState(null);
   const [idx, setIdx] = reactExports.useState(0);
   const [solvedCount, setSolvedCount] = reactExports.useState(0);
+  const [results, setResults] = reactExports.useState([]);
+  const [attempted, setAttempted] = reactExports.useState(false);
   const refresh = reactExports.useCallback(() => {
     void api.exercises.list().then(setAll);
   }, []);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["exercises:changed"], refresh);
-  async function startSession() {
-    const due = await api.exercises.due();
-    setSession(due.slice(0, 10));
+  const allTags = reactExports.useMemo(() => {
+    const s = /* @__PURE__ */ new Set();
+    for (const e of all) for (const t of e.tags) s.add(t);
+    return [...s].sort();
+  }, [all]);
+  const filtered = reactExports.useMemo(() => tagFilter ? all.filter((e) => e.tags.includes(tagFilter)) : all, [all, tagFilter]);
+  async function beginSession(items) {
+    setSession(items);
     setIdx(0);
     setSolvedCount(0);
+    setResults([]);
+    setAttempted(false);
   }
+  async function startSession() {
+    const due = await api.exercises.due();
+    const scoped = tagFilter ? due.filter((e) => e.tags.includes(tagFilter)) : due;
+    await beginSession(scoped.slice(0, 10));
+  }
+  async function practiceAnyway() {
+    const items = [...filtered].sort((a, b) => (a.dueAt ?? "").localeCompare(b.dueAt ?? "")).slice(0, 10);
+    await beginSession(items);
+  }
+  function goToNext() {
+    setIdx((i) => i + 1);
+    setAttempted(false);
+  }
+  const sessionJustFinished = session !== null && idx >= session.length;
+  reactExports.useEffect(() => {
+    if (sessionJustFinished) playSound("complete");
+  }, [sessionJustFinished]);
   if (session) {
     const current = session[idx];
     if (!current) {
@@ -15559,6 +16158,19 @@ function Exercises() {
             session.length,
             " solved on the first try."
           ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "center", gap: 4, margin: "10px 0" }, children: results.map((r, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "span",
+            {
+              title: r === "correct" ? "Solved first try" : "Missed or needed a hint",
+              style: {
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: r === "correct" ? "var(--accent-strong)" : "var(--danger)"
+              }
+            },
+            i
+          )) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: "You solved positions you missed in real games. Scheduling updated." }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setSession(null), children: "Done" })
         ] })
@@ -15574,6 +16186,18 @@ function Exercises() {
         " · ",
         current.title
       ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4, marginBottom: 10 }, children: session.map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "span",
+        {
+          style: {
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: i < results.length ? results[i] === "correct" ? "var(--accent-strong)" : "var(--danger)" : i === idx ? "var(--info)" : "var(--border)"
+          }
+        },
+        i
+      )) }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(
         PuzzleBoard,
         {
@@ -15584,34 +16208,48 @@ function Exercises() {
           explanation: current.solution.explanation,
           onComplete: (firstTry) => {
             void api.exercises.attempt(current.id, firstTry);
+            setAttempted(true);
+            setResults((r) => [...r, firstTry ? "correct" : "missed"]);
+            playSound(firstTry ? "correct" : "wrong");
             if (firstTry) setSolvedCount((c) => c + 1);
           }
         },
         current.id
       ),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 14 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setIdx(idx + 1), children: "Next puzzle →" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { disabled: !attempted, title: attempted ? void 0 : "Solve or reveal the solution first", onClick: goToNext, children: "Next puzzle →" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setSession(null), children: "End session" })
       ] })
     ] });
   }
-  const dueNow = all.filter((e) => e.dueAt && e.dueAt <= (/* @__PURE__ */ new Date()).toISOString());
+  const dueNow = filtered.filter((e) => e.dueAt && e.dueAt <= (/* @__PURE__ */ new Date()).toISOString());
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Exercises" }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Personalized puzzles generated from your own mistakes, scheduled by spaced repetition." }),
+    allTags.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap", marginBottom: 12, gap: 6 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "Focus:" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${tagFilter === null ? "primary" : ""}`, onClick: () => setTagFilter(null), children: "All" }),
+      allTags.map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${tagFilter === t ? "primary" : ""}`, onClick: () => setTagFilter(t), children: t.replace(/-/g, " ") }, t))
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { marginBottom: 16 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "stat-big", children: dueNow.length }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
-          "due now · ",
-          all.length,
+          "due now",
+          tagFilter ? ` · ${tagFilter.replace(/-/g, " ")}` : "",
+          " · ",
+          filtered.length,
           " total"
         ] })
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", disabled: dueNow.length === 0, onClick: () => void startSession(), children: "Start session" })
+      dueNow.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => void startSession(), children: "Start session" }) : filtered.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => void practiceAnyway(), children: "Practice anyway" })
     ] }) }),
-    all.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 36 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "No exercises yet." }),
+    filtered.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 36 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { children: [
+        "No exercises ",
+        tagFilter ? `tagged “${tagFilter}”` : "yet",
+        "."
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: "Analyze your games — every classified mistake becomes a training position." })
     ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
@@ -15619,14 +16257,19 @@ function Exercises() {
         /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Type" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Tags" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Difficulty" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Due" })
+        /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Due" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
       ] }) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: all.map((e) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: filtered.map((e) => /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { className: "clickable", onClick: () => void beginSession([e]), children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: e.title }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.type.replace(/_/g, " ") }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: e.tags.slice(0, 3).map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", style: { marginRight: 4 }, children: t }, t)) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: "★".repeat(e.difficulty) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.dueAt ? e.dueAt.slice(0, 10) : "—" })
+        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.dueAt ? e.dueAt.slice(0, 10) : "—" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: (ev) => {
+          ev.stopPropagation();
+          void beginSession([e]);
+        }, children: "Solve" }) })
       ] }, e.id)) })
     ] })
   ] });
@@ -15994,17 +16637,35 @@ const PREVIEW_FEN = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w
 function Settings() {
   const settings = useStore((s) => s.settings);
   const refreshSettings = useStore((s) => s.refreshSettings);
+  const setOnboardingOpen = useStore((s) => s.setOnboardingOpen);
   const [draft, setDraft] = reactExports.useState(null);
   const [saved, setSaved] = reactExports.useState(false);
+  const [backfillNotice, setBackfillNotice] = reactExports.useState(null);
   reactExports.useEffect(() => {
     if (settings) setDraft(JSON.parse(JSON.stringify(settings)));
   }, [settings]);
   if (!draft) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
   async function save() {
+    const identityChanged = draft.chesscomUsername !== settings?.chesscomUsername || draft.lichessUsername !== settings?.lichessUsername || draft.displayName !== settings?.displayName;
     await api.settings.set(draft);
     await refreshSettings();
     setSaved(true);
     setTimeout(() => setSaved(false), 2e3);
+    if (identityChanged) {
+      const result = await api.identity.backfill();
+      if (result.updatedGames > 0) {
+        setBackfillNotice(
+          `Re-detected your side in ${result.updatedGames} game${result.updatedGames === 1 ? "" : "s"}` + (result.reclassifiedGames > 0 ? ` and refreshed mistakes for ${result.reclassifiedGames} of them.` : ".")
+        );
+      }
+    }
+  }
+  function runSetupWizard() {
+    try {
+      window.localStorage.removeItem(ONBOARDING_DONE_KEY);
+    } catch {
+    }
+    setOnboardingOpen(true);
   }
   const set = (key, value) => setDraft({ ...draft, [key]: value });
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { maxWidth: 720 }, children: [
@@ -16061,7 +16722,18 @@ function Settings() {
             "Piece set",
             /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: draft.pieceSet, onChange: (e) => set("pieceSet", e.target.value), children: PIECE_SETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p.value, children: p.label }, p.value)) })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "The preview updates immediately; click “Save settings” to apply everywhere." })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "The preview updates immediately; click “Save settings” to apply everywhere." }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6, marginTop: 6 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "input",
+              {
+                type: "checkbox",
+                checked: draft.soundEnabled,
+                onChange: (e) => set("soundEnabled", e.target.checked)
+              }
+            ),
+            "Sound effects (moves, puzzle feedback, session complete)"
+          ] })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: 240, flexShrink: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
           Board,
@@ -16169,6 +16841,12 @@ function Settings() {
         /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: "Ongoing games are never queued for engine analysis." })
       ] })
     ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Setup" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginBottom: 8 }, children: "Re-run the first-time setup steps (identity, import, engine)." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: runSetupWizard, children: "Run setup wizard again" })
+    ] }),
+    backfillNotice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout success", style: { marginBottom: 14 }, children: backfillNotice }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => void save(), children: "Save settings" }),
       saved && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge green", children: "Saved" })
@@ -16178,6 +16856,21 @@ function Settings() {
 function App() {
   const route = useStore((s) => s.route);
   const importModalOpen = useStore((s) => s.importModalOpen);
+  const onboardingOpen = useStore((s) => s.onboardingOpen);
+  const setOnboardingOpen = useStore((s) => s.setOnboardingOpen);
+  const settings = useStore((s) => s.settings);
+  reactExports.useEffect(() => {
+    if (!settings) return;
+    let done = false;
+    try {
+      done = window.localStorage.getItem(ONBOARDING_DONE_KEY) === "true";
+    } catch {
+    }
+    if (done || settings.chesscomUsername || settings.lichessUsername) return;
+    void api.games.list({ limit: 1 }).then((games) => {
+      if (games.length === 0) setOnboardingOpen(true);
+    });
+  }, [settings !== null]);
   let content;
   switch (route.name) {
     case "today":
@@ -16199,7 +16892,7 @@ function App() {
       content = /* @__PURE__ */ jsxRuntimeExports.jsx(LessonPlayer, { lessonId: route.lessonId });
       break;
     case "exercises":
-      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Exercises, {});
+      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Exercises, { initialTag: route.tag });
       break;
     case "ai-studio":
       content = /* @__PURE__ */ jsxRuntimeExports.jsx(AiStudio, {});
@@ -16214,7 +16907,8 @@ function App() {
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "app-shell", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(Sidebar, {}),
     /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "main-content", children: content }),
-    importModalOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ImportModal, {})
+    importModalOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ImportModal, {}),
+    onboardingOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(Onboarding, {})
   ] });
 }
 wireEvents();

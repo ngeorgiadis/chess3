@@ -12,6 +12,7 @@ async function invoke(channel, args) {
 const CHANNELS = [
   "settings:get",
   "settings:set",
+  "identity:backfill",
   "games:list",
   "games:get",
   "games:moves",

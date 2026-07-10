@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { useEffect } from 'react'
 import { api } from './api'
+import { setSoundEnabled } from './sound'
 import type { AppEvent, AppSettings, JobRecord, LiveEvalUpdate } from '@shared/types'
 
 export type Route =
@@ -10,7 +11,7 @@ export type Route =
   | { name: 'openings' }
   | { name: 'lessons' }
   | { name: 'lesson'; lessonId: string }
-  | { name: 'exercises' }
+  | { name: 'exercises'; tag?: string }
   | { name: 'ai-studio' }
   | { name: 'engines' }
   | { name: 'settings' }
@@ -20,6 +21,7 @@ interface AppState {
   settings: AppSettings | null
   jobs: JobRecord[]
   importModalOpen: boolean
+  onboardingOpen: boolean
   /** Live engine evaluation of the currently visible board. */
   evalEnabled: boolean
   evalError: string | null
@@ -27,6 +29,7 @@ interface AppState {
   evalFen: string | null
   navigate: (route: Route) => void
   setImportModalOpen: (open: boolean) => void
+  setOnboardingOpen: (open: boolean) => void
   refreshSettings: () => Promise<void>
   refreshJobs: () => Promise<void>
   setEvalEnabled: (on: boolean) => Promise<void>
@@ -39,13 +42,19 @@ export const useStore = create<AppState>((set, get) => ({
   settings: null,
   jobs: [],
   importModalOpen: false,
+  onboardingOpen: false,
   evalEnabled: false,
   evalError: null,
   evalUpdate: null,
   evalFen: null,
   navigate: (route) => set({ route }),
   setImportModalOpen: (open) => set({ importModalOpen: open }),
-  refreshSettings: async () => set({ settings: await api.settings.get() }),
+  setOnboardingOpen: (open) => set({ onboardingOpen: open }),
+  refreshSettings: async () => {
+    const settings = await api.settings.get()
+    setSoundEnabled(settings.soundEnabled)
+    set({ settings })
+  },
   refreshJobs: async () => set({ jobs: await api.jobs.list() }),
   setEvalEnabled: async (on) => {
     try {

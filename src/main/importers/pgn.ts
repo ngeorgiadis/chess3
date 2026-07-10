@@ -110,11 +110,16 @@ export function inferTimeClass(timeControl: string | undefined): string | null {
   return 'classical'
 }
 
-function detectUserColor(headers: Record<string, string>): 'white' | 'black' | 'unknown' {
+/**
+ * Detect which side the user played. `knownUsername` is the exact identity the import was
+ * requested for (e.g. the username typed into the import modal) and takes priority over
+ * settings — settings may not have been saved yet, or may lag behind what the user typed.
+ */
+function detectUserColor(headers: Record<string, string>, knownUsername?: string | null): 'white' | 'black' | 'unknown' {
   const s = getSettings()
-  const names = [s.chesscomUsername, s.lichessUsername, s.displayName]
+  const names = [knownUsername, s.chesscomUsername, s.lichessUsername, s.displayName]
     .filter(Boolean)
-    .map((n) => n.toLowerCase())
+    .map((n) => (n as string).toLowerCase())
   if (names.length === 0) return 'unknown'
   const white = (headers.White ?? '').toLowerCase()
   const black = (headers.Black ?? '').toLowerCase()
@@ -138,6 +143,8 @@ export interface InsertGameInput {
     startedAt: string | null
     endedAt: string | null
     ongoing: boolean
+    /** The exact username this import was requested for — takes priority for side detection. */
+    knownUsername: string | null
   }>
 }
 
@@ -201,7 +208,7 @@ export function insertGame(input: InsertGameInput): InsertOutcome {
     overrides.whiteRating ?? (h.WhiteElo ? parseInt(h.WhiteElo) || null : null),
     overrides.blackRating ?? (h.BlackElo ? parseInt(h.BlackElo) || null : null),
     result,
-    detectUserColor(h),
+    detectUserColor(h, overrides.knownUsername),
     timeControl,
     overrides.timeClass ?? inferTimeClass(timeControl ?? undefined),
     (h.Variant ?? 'chess').toLowerCase() === 'standard' ? 'chess' : (h.Variant ?? 'chess').toLowerCase(),

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
 import { Board } from '../components/Board'
+import { ONBOARDING_DONE_KEY } from '../components/Onboarding'
 import type { AppSettings, BoardColorScheme, PieceSet } from '@shared/types'
 
 const BOARD_THEMES: Array<{ value: BoardColorScheme; label: string }> = [
@@ -23,8 +24,10 @@ const PREVIEW_FEN = 'r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w
 export function Settings(): React.JSX.Element {
   const settings = useStore((s) => s.settings)
   const refreshSettings = useStore((s) => s.refreshSettings)
+  const setOnboardingOpen = useStore((s) => s.setOnboardingOpen)
   const [draft, setDraft] = useState<AppSettings | null>(null)
   const [saved, setSaved] = useState(false)
+  const [backfillNotice, setBackfillNotice] = useState<string | null>(null)
 
   useEffect(() => {
     if (settings) setDraft(JSON.parse(JSON.stringify(settings)) as AppSettings)
@@ -33,10 +36,32 @@ export function Settings(): React.JSX.Element {
   if (!draft) return <div className="muted">Loading…</div>
 
   async function save(): Promise<void> {
+    const identityChanged =
+      draft!.chesscomUsername !== settings?.chesscomUsername ||
+      draft!.lichessUsername !== settings?.lichessUsername ||
+      draft!.displayName !== settings?.displayName
     await api.settings.set(draft!)
     await refreshSettings()
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+    if (identityChanged) {
+      const result = await api.identity.backfill()
+      if (result.updatedGames > 0) {
+        setBackfillNotice(
+          `Re-detected your side in ${result.updatedGames} game${result.updatedGames === 1 ? '' : 's'}` +
+            (result.reclassifiedGames > 0 ? ` and refreshed mistakes for ${result.reclassifiedGames} of them.` : '.')
+        )
+      }
+    }
+  }
+
+  function runSetupWizard(): void {
+    try {
+      window.localStorage.removeItem(ONBOARDING_DONE_KEY)
+    } catch {
+      /* ignore */
+    }
+    setOnboardingOpen(true)
   }
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void =>
@@ -106,6 +131,14 @@ export function Settings(): React.JSX.Element {
               </select>
             </label>
             <div className="muted">The preview updates immediately; click “Save settings” to apply everywhere.</div>
+            <label className="row" style={{ gap: 6, marginTop: 6 }}>
+              <input
+                type="checkbox"
+                checked={draft.soundEnabled}
+                onChange={(e) => set('soundEnabled', e.target.checked)}
+              />
+              Sound effects (moves, puzzle feedback, session complete)
+            </label>
           </div>
           <div style={{ width: 240, flexShrink: 0 }}>
             <Board
@@ -207,6 +240,22 @@ export function Settings(): React.JSX.Element {
           <li>Ongoing games are never queued for engine analysis.</li>
         </ul>
       </div>
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>Setup</h3>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          Re-run the first-time setup steps (identity, import, engine).
+        </div>
+        <button className="small" onClick={runSetupWizard}>
+          Run setup wizard again
+        </button>
+      </div>
+
+      {backfillNotice && (
+        <div className="callout success" style={{ marginBottom: 14 }}>
+          {backfillNotice}
+        </div>
+      )}
 
       <div className="row">
         <button className="primary" onClick={() => void save()}>

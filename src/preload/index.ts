@@ -16,6 +16,7 @@ async function invoke(channel: string, args?: unknown): Promise<unknown> {
 const CHANNELS = [
   'settings:get',
   'settings:set',
+  'identity:backfill',
   'games:list',
   'games:get',
   'games:moves',

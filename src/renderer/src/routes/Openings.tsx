@@ -88,7 +88,6 @@ function Practice({ due, onDone }: { due: RepertoireNodeRecord[]; onDone: () => 
       void api.repertoire.attempt(node.id, wrongTries === 0 && !showHint)
       setResultFen(fenAfterMove(node.fenBefore, uci))
       setFeedback(`✓ ${san} is your repertoire move.${node.comment ? ' ' + node.comment : ''}`)
-      setTimeout(advance, 1200)
     } else {
       setWrongTries(wrongTries + 1)
       setFeedback(`${san} is not the line you chose to play here. ${wrongTries === 0 ? 'Try once more.' : ''}`)
@@ -100,8 +99,18 @@ function Practice({ due, onDone }: { due: RepertoireNodeRecord[]; onDone: () => 
     void api.repertoire.attempt(node.id, false)
     setResultFen(fenAfterMove(node.fenBefore, node.moveUci))
     setFeedback(`The repertoire move is ${node.moveSan}.`)
-    setTimeout(advance, 1600)
   }
+
+  // advance on Enter/Space once the position has been answered — no forced timer
+  useEffect(() => {
+    if (!resultFen) return
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key === 'Enter' || e.key === ' ') advance()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resultFen])
 
   const lastMove = resultFen
     ? { from: node.moveUci.slice(0, 2), to: node.moveUci.slice(2, 4) }
@@ -147,6 +156,11 @@ function Practice({ due, onDone }: { due: RepertoireNodeRecord[]; onDone: () => 
           {!resultFen && (
             <button className="small" onClick={reveal}>
               Show move
+            </button>
+          )}
+          {resultFen && (
+            <button className="small primary" onClick={advance}>
+              Next →
             </button>
           )}
           <button className="small" onClick={onDone}>
@@ -321,15 +335,44 @@ export function Openings(): React.JSX.Element {
     [nodes]
   )
 
-  const sorted = useMemo(
-    () =>
-      [...nodes].sort((a, b) => moveNumberOf(a) - moveNumberOf(b) || a.fenBefore.localeCompare(b.fenBefore)),
-    [nodes]
-  )
+  interface RepGroup {
+    key: string
+    openingName: string
+    lineName: string | null
+    nodes: RepertoireNodeRecord[]
+    dueCount: number
+  }
+
+  const groups = useMemo<RepGroup[]>(() => {
+    const nowIso = new Date().toISOString()
+    const map = new Map<string, RepGroup>()
+    for (const n of nodes) {
+      const openingName = n.openingName ?? 'Other lines'
+      const key = `${openingName}|||${n.lineName ?? ''}`
+      if (!map.has(key)) map.set(key, { key, openingName, lineName: n.lineName, nodes: [], dueCount: 0 })
+      const g = map.get(key)!
+      g.nodes.push(n)
+      if (n.dueAt && n.dueAt <= nowIso && n.fenBefore.split(' ')[1] === (n.color === 'white' ? 'w' : 'b')) {
+        g.dueCount++
+      }
+    }
+    for (const g of map.values()) {
+      g.nodes.sort((a, b) => moveNumberOf(a) - moveNumberOf(b) || a.fenBefore.localeCompare(b.fenBefore))
+    }
+    return [...map.values()].sort(
+      (a, b) => a.openingName.localeCompare(b.openingName) || (a.lineName ?? '').localeCompare(b.lineName ?? '')
+    )
+  }, [nodes])
 
   async function startPractice(): Promise<void> {
     const due = await api.repertoire.due()
     setPractice(due.filter((n) => n.color === color))
+  }
+
+  async function practiceGroup(g: RepGroup): Promise<void> {
+    const due = await api.repertoire.due()
+    const ids = new Set(g.nodes.map((n) => n.id))
+    setPractice(due.filter((n) => n.color === color && ids.has(n.id)))
   }
 
   const previewFenAfter = useMemo(() => {
@@ -399,7 +442,7 @@ export function Openings(): React.JSX.Element {
         </button>
       </div>
 
-      {sorted.length === 0 ? (
+      {groups.length === 0 ? (
         <div className="card" style={{ textAlign: 'center', padding: 36 }}>
           <p>No repertoire lines yet for {color}.</p>
           <p className="muted">
@@ -409,66 +452,81 @@ export function Openings(): React.JSX.Element {
         </div>
       ) : (
         <div className="row" style={{ alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Move</th>
-                  <th>Your move</th>
-                  <th>Status</th>
-                  <th>Priority</th>
-                  <th>Due</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((n) => (
-                  <tr
-                    key={n.id}
-                    className={`clickable ${selected?.id === n.id ? 'selected' : ''}`}
-                    onClick={() => setSelected(n)}
-                  >
-                    <td className="muted">{moveNumberOf(n)}.</td>
-                    <td className="mono">
-                      <b>{n.moveSan}</b>
-                    </td>
-                    <td>
-                      <span className={`badge ${n.status === 'known' ? 'green' : n.status === 'lapsed' ? 'red' : 'blue'}`}>
-                        {n.status}
-                      </span>
-                    </td>
-                    <td>
-                      <select
-                        value={n.priority}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => void api.repertoire.setPriority(n.id, e.target.value as RepertoireNodeRecord['priority'])}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {groups.map((g) => (
+              <div key={g.key} className="card" style={{ marginBottom: 14 }}>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                  <h3 style={{ margin: 0 }}>
+                    {g.openingName}
+                    {g.lineName && <span className="muted"> — {g.lineName}</span>}
+                  </h3>
+                  <button className="small primary" disabled={g.dueCount === 0} onClick={() => void practiceGroup(g)}>
+                    Practice this line ({g.dueCount})
+                  </button>
+                </div>
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>Move</th>
+                      <th>Your move</th>
+                      <th>Status</th>
+                      <th>Priority</th>
+                      <th>Due</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.nodes.map((n) => (
+                      <tr
+                        key={n.id}
+                        className={`clickable ${selected?.id === n.id ? 'selected' : ''}`}
+                        onClick={() => setSelected(n)}
                       >
-                        {PRIORITIES.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="muted">{n.dueAt ? n.dueAt.slice(0, 10) : '—'}</td>
-                    <td>
-                      <button
-                        className="small danger"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void api.repertoire.delete(n.id)
-                        }}
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                        <td className="muted">{moveNumberOf(n)}.</td>
+                        <td className="mono">
+                          <b>{n.moveSan}</b>
+                        </td>
+                        <td>
+                          <span className={`badge ${n.status === 'known' ? 'green' : n.status === 'lapsed' ? 'red' : 'blue'}`}>
+                            {n.status}
+                          </span>
+                        </td>
+                        <td>
+                          <select
+                            value={n.priority}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => void api.repertoire.setPriority(n.id, e.target.value as RepertoireNodeRecord['priority'])}
+                          >
+                            {PRIORITIES.map((p) => (
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="muted">{n.dueAt ? n.dueAt.slice(0, 10) : '—'}</td>
+                        <td>
+                          <button
+                            className="small danger"
+                            title="Delete this move and everything after it in the line"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!window.confirm(`Remove ${n.moveSan} from your ${color} repertoire? Moves that follow it in this line are removed too.`)) return
+                              void api.repertoire.delete(n.id)
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
           </div>
           {selected && previewFenAfter && (
-            <div className="card" style={{ width: 300, flexShrink: 0 }}>
+            <div className="card" style={{ width: 300, flexShrink: 0, position: 'sticky', top: 0 }}>
               <h3>After {selected.moveSan}</h3>
               <Board
                 fen={previewFenAfter}

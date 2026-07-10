@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore, useAppEvent } from '../store'
 import type { TodayPlan, PlanTask } from '@shared/types'
@@ -12,14 +12,84 @@ const ACTION_LABELS: Record<string, string> = {
   'time-management': 'Time management'
 }
 
+interface StoredTask {
+  id: string
+  title: string
+}
+
+function planStorageKey(date: string): string {
+  return `cms-today-plan-${date}`
+}
+
+/** Remember the plan tasks first seen today, so completed ones (now gone from the live plan) still show with a checkmark. */
+function loadOrInitStoredTasks(plan: TodayPlan): StoredTask[] {
+  const key = planStorageKey(plan.date)
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw) {
+      const stored = JSON.parse(raw) as StoredTask[]
+      // merge in any tasks that appeared later in the day (e.g. a new game to review)
+      const known = new Set(stored.map((t) => t.id))
+      const merged = [...stored, ...plan.tasks.filter((t) => !known.has(t.id)).map((t) => ({ id: t.id, title: t.title }))]
+      if (merged.length !== stored.length) window.localStorage.setItem(key, JSON.stringify(merged))
+      return merged
+    }
+  } catch {
+    /* ignore corrupt storage */
+  }
+  const fresh = plan.tasks.map((t) => ({ id: t.id, title: t.title }))
+  try {
+    window.localStorage.setItem(key, JSON.stringify(fresh))
+  } catch {
+    /* storage unavailable — completion tracking just won't persist */
+  }
+  return fresh
+}
+
+function StreakCalendar({ activeDays, streakDays }: { activeDays: string[]; streakDays: number }): React.JSX.Element {
+  const active = useMemo(() => new Set(activeDays), [activeDays])
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const days = useMemo(() => {
+    const out: string[] = []
+    for (let i = 27; i >= 0; i--) out.push(new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10))
+    return out
+  }, [])
+  return (
+    <div>
+      <div className="row" style={{ gap: 3, flexWrap: 'wrap' }}>
+        {days.map((d) => (
+          <span
+            key={d}
+            title={`${d}${active.has(d) ? ' · trained' : ''}`}
+            style={{
+              width: 11,
+              height: 11,
+              borderRadius: 3,
+              background: active.has(d) ? 'var(--accent)' : 'var(--bg-panel)',
+              border: d === todayStr ? '1px solid var(--accent-strong)' : '1px solid var(--border)'
+            }}
+          />
+        ))}
+      </div>
+      <div className="muted" style={{ marginTop: 4 }}>
+        {streakDays > 0 ? `${streakDays} day streak — keep it going` : 'Train today to start a streak'}
+      </div>
+    </div>
+  )
+}
+
 export function Today(): React.JSX.Element {
   const [plan, setPlan] = useState<TodayPlan | null>(null)
+  const [storedTasks, setStoredTasks] = useState<StoredTask[]>([])
   const navigate = useStore((s) => s.navigate)
   const setImportModalOpen = useStore((s) => s.setImportModalOpen)
   const settings = useStore((s) => s.settings)
 
   const refresh = useCallback(() => {
-    void api.plan.today().then(setPlan)
+    void api.plan.today().then((p) => {
+      setPlan(p)
+      setStoredTasks(loadOrInitStoredTasks(p))
+    })
   }, [])
   useEffect(refresh, [refresh])
   useAppEvent(['games:changed', 'exercises:changed', 'repertoire:changed', 'lessons:changed', 'job:completed'], refresh)
@@ -52,6 +122,9 @@ export function Today(): React.JSX.Element {
   if (!plan) return <div className="muted">Loading your plan…</div>
 
   const firstTask = plan.tasks[0]
+  const liveIds = new Set(plan.tasks.map((t) => t.id))
+  const completedToday = storedTasks.filter((t) => !liveIds.has(t.id))
+  const totalToday = storedTasks.length
 
   return (
     <div>
@@ -62,13 +135,30 @@ export function Today(): React.JSX.Element {
 
       <div className="row" style={{ alignItems: 'stretch', marginBottom: 16, flexWrap: 'wrap' }}>
         <div className="card" style={{ flex: 2, minWidth: 340 }}>
-          <h3>Today's training plan</h3>
-          {plan.tasks.length === 0 && (
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <h3>Today's training plan</h3>
+            {totalToday > 0 && (
+              <span className="badge green">
+                {completedToday.length} of {totalToday} done
+              </span>
+            )}
+          </div>
+          {plan.tasks.length === 0 && completedToday.length === 0 && (
             <div className="muted">
               Nothing due right now. Import games or start a lesson to build your plan.
             </div>
           )}
+          {plan.tasks.length === 0 && completedToday.length > 0 && (
+            <div className="callout success" style={{ marginBottom: 10 }}>
+              Today's plan is complete. Nice work — come back tomorrow, or keep training below.
+            </div>
+          )}
           <div className="col">
+            {completedToday.map((t) => (
+              <div key={t.id} className="row" style={{ justifyContent: 'space-between', opacity: 0.55 }}>
+                <div style={{ textDecoration: 'line-through' }}>✓ {t.title}</div>
+              </div>
+            ))}
             {plan.tasks.map((task, i) => (
               <div key={task.id} className="row" style={{ justifyContent: 'space-between' }}>
                 <div>
@@ -106,10 +196,19 @@ export function Today(): React.JSX.Element {
               <div className="muted">rating goal</div>
             </div>
           </div>
+          <div style={{ marginTop: 12 }}>
+            <StreakCalendar activeDays={plan.activeDays} streakDays={plan.streakDays} />
+          </div>
           <div className="col" style={{ marginTop: 12, gap: 4 }}>
-            <div className="muted">{plan.dueExercises} exercises due</div>
-            <div className="muted">{plan.dueRepertoire} opening moves due</div>
-            <div className="muted">{plan.unreviewedGames} analyzed games to review</div>
+            <div className="muted">
+              {plan.dueExercises} exercise{plan.dueExercises === 1 ? '' : 's'} due
+            </div>
+            <div className="muted">
+              {plan.dueRepertoire} opening move{plan.dueRepertoire === 1 ? '' : 's'} due
+            </div>
+            <div className="muted">
+              {plan.unreviewedGames} analyzed game{plan.unreviewedGames === 1 ? '' : 's'} to review
+            </div>
           </div>
         </div>
       </div>
@@ -123,9 +222,15 @@ export function Today(): React.JSX.Element {
         ) : (
           <div className="col" style={{ gap: 6 }}>
             {plan.weaknesses.map((w) => (
-              <div key={w.tag} className="row" style={{ justifyContent: 'space-between' }}>
-                <span>
-                  <span className="badge yellow">{ACTION_LABELS[w.tag] ?? w.tag}</span>
+              <div
+                key={w.tag}
+                className="row clickable"
+                style={{ gap: 10, cursor: 'pointer' }}
+                onClick={() => navigate({ name: 'exercises', tag: w.tag })}
+                title={`Practice ${ACTION_LABELS[w.tag] ?? w.tag} exercises`}
+              >
+                <span className="badge yellow" style={{ flexShrink: 0 }}>
+                  {ACTION_LABELS[w.tag] ?? w.tag}
                 </span>
                 <span className="muted">{w.evidence}</span>
               </div>
