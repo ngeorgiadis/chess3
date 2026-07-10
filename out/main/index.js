@@ -227,6 +227,13 @@ const MIGRATIONS = [
     body TEXT NOT NULL,
     cached_at TEXT NOT NULL
   );
+  `,
+  // v2 — accuracy columns + repertoire line labels (UX improvement pass)
+  `
+  ALTER TABLE games ADD COLUMN accuracy_white REAL;
+  ALTER TABLE games ADD COLUMN accuracy_black REAL;
+  ALTER TABLE repertoire_nodes ADD COLUMN opening_name TEXT;
+  ALTER TABLE repertoire_nodes ADD COLUMN line_name TEXT;
   `
 ];
 function isOurSchema(candidate) {
@@ -266,7 +273,19 @@ function initDb(dataDir) {
       throw e;
     }
   }
+  ensureColumns();
   return db;
+}
+function ensureColumns() {
+  const d = db;
+  const add = (table, column, ddl) => {
+    const cols = d.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  add("games", "accuracy_white", "accuracy_white REAL");
+  add("games", "accuracy_black", "accuracy_black REAL");
+  add("repertoire_nodes", "opening_name", "opening_name TEXT");
+  add("repertoire_nodes", "line_name", "line_name TEXT");
 }
 function getDb() {
   if (!db) throw new Error("Database not initialized");
@@ -288,7 +307,8 @@ const DEFAULTS = {
   aiConfig: { mode: "manual", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "" },
   defaultProfileId: null,
   boardTheme: "green",
-  pieceSet: "standard"
+  pieceSet: "standard",
+  soundEnabled: true
 };
 function getSettings() {
   const rows = getDb().prepare("SELECT key, value_json FROM settings").all();
@@ -318,104 +338,6 @@ function broadcast(event) {
   for (const win of electron.BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send("app:event", event);
   }
-}
-function rowToGame(row) {
-  return {
-    id: row.id,
-    sourcePlatform: row.source_platform ?? null,
-    sourceGameId: row.source_game_id ?? null,
-    sourceGameUrl: row.source_game_url ?? null,
-    rawPgn: row.raw_pgn,
-    whiteName: row.white_name ?? null,
-    blackName: row.black_name ?? null,
-    whiteRating: row.white_rating ?? null,
-    blackRating: row.black_rating ?? null,
-    result: row.result ?? null,
-    userColor: row.user_color,
-    timeControl: row.time_control ?? null,
-    timeClass: row.time_class ?? null,
-    variant: row.variant,
-    ecoCode: row.eco_code ?? null,
-    openingName: row.opening_name ?? null,
-    startedAt: row.started_at ?? null,
-    endedAt: row.ended_at ?? null,
-    importedAt: row.imported_at,
-    analysisStatus: row.analysis_status,
-    plyCount: row.ply_count,
-    mistakeCount: row.mistake_count ?? 0,
-    ongoing: Boolean(row.ongoing)
-  };
-}
-function listGames(filters = {}) {
-  const clauses = [];
-  const params = [];
-  if (filters.text) {
-    clauses.push("(white_name LIKE ? OR black_name LIKE ? OR opening_name LIKE ? OR eco_code LIKE ?)");
-    const like = `%${filters.text}%`;
-    params.push(like, like, like, like);
-  }
-  if (filters.platform) {
-    clauses.push("source_platform = ?");
-    params.push(filters.platform);
-  }
-  if (filters.timeClass) {
-    clauses.push("time_class = ?");
-    params.push(filters.timeClass);
-  }
-  if (filters.color && filters.color !== void 0) {
-    clauses.push("user_color = ?");
-    params.push(filters.color);
-  }
-  if (filters.result) {
-    if (filters.result === "draw") clauses.push("result = '1/2-1/2'");
-    else if (filters.result === "win")
-      clauses.push(
-        "((user_color = 'white' AND result = '1-0') OR (user_color = 'black' AND result = '0-1'))"
-      );
-    else
-      clauses.push(
-        "((user_color = 'white' AND result = '0-1') OR (user_color = 'black' AND result = '1-0'))"
-      );
-  }
-  if (filters.analyzed !== void 0) {
-    clauses.push(filters.analyzed ? "analysis_status = 'done'" : "analysis_status != 'done'");
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const limit2 = Math.min(filters.limit ?? 200, 1e3);
-  const offset = filters.offset ?? 0;
-  const rows = getDb().prepare(
-    `SELECT g.*, (SELECT COUNT(*) FROM mistakes m WHERE m.game_id = g.id) AS mistake_count
-       FROM games g ${where}
-       ORDER BY COALESCE(g.ended_at, g.imported_at) DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit2, offset);
-  return rows.map(rowToGame);
-}
-function getGame(id2) {
-  const row = getDb().prepare("SELECT g.*, (SELECT COUNT(*) FROM mistakes m WHERE m.game_id = g.id) AS mistake_count FROM games g WHERE g.id = ?").get(id2);
-  return row ? rowToGame(row) : null;
-}
-function getMoves(gameId) {
-  const rows = getDb().prepare("SELECT * FROM moves WHERE game_id = ? ORDER BY ply").all(gameId);
-  return rows.map((row) => ({
-    gameId: row.game_id,
-    ply: row.ply,
-    moveNumber: row.move_number,
-    color: row.color,
-    san: row.san,
-    uci: row.uci,
-    fenBefore: row.fen_before,
-    fenAfter: row.fen_after,
-    comment: row.comment ?? null,
-    clockMs: row.clock_ms ?? null
-  }));
-}
-function deleteGame(id2) {
-  getDb().prepare("DELETE FROM games WHERE id = ?").run(id2);
-  broadcast({ type: "games:changed", payload: null });
-}
-function exportPgn(gameIds) {
-  const stmt = getDb().prepare("SELECT raw_pgn FROM games WHERE id = ?");
-  return gameIds.map((id2) => stmt.get(id2)?.raw_pgn).filter(Boolean).join("\n\n");
 }
 function rootNode(comment) {
   return comment !== null ? { comment, variations: [] } : { variations: [] };
@@ -3871,254 +3793,6 @@ class Chess {
     return this._moveNumber;
   }
 }
-function splitPgn(text) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const games = [];
-  let current = [];
-  let inMoves = false;
-  for (const line of lines) {
-    const isHeader = /^\s*\[\w+\s+"/.test(line);
-    if (isHeader && inMoves) {
-      if (current.join("\n").trim()) games.push(current.join("\n").trim());
-      current = [];
-      inMoves = false;
-    }
-    if (!isHeader && line.trim() !== "") inMoves = true;
-    current.push(line);
-  }
-  if (current.join("\n").trim()) games.push(current.join("\n").trim());
-  return games;
-}
-function parseHeaders(pgn2) {
-  const headers = {};
-  const re = /^\s*\[(\w+)\s+"((?:[^"\\]|\\.)*)"\]/gm;
-  let m;
-  while ((m = re.exec(pgn2)) !== null) {
-    headers[m[1]] = m[2].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-  return headers;
-}
-function parseClockComment(comment) {
-  const m = /\[%clk\s+(\d+):(\d+):(\d+(?:\.\d+)?)\]/.exec(comment);
-  if (!m) return null;
-  return Math.round((parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3])) * 1e3);
-}
-function parsePgnGame(pgn2) {
-  const headers = parseHeaders(pgn2);
-  const chess = new Chess();
-  chess.loadPgn(pgn2, { strict: false });
-  const commentsByFen = /* @__PURE__ */ new Map();
-  for (const c of chess.getComments()) commentsByFen.set(c.fen, c.comment);
-  const history = chess.history({ verbose: true });
-  const moves = [];
-  let ply = 0;
-  for (const mv of history) {
-    ply++;
-    const comment = commentsByFen.get(mv.after) ?? null;
-    moves.push({
-      ply,
-      moveNumber: Math.ceil(ply / 2),
-      color: mv.color === "w" ? "white" : "black",
-      san: mv.san,
-      uci: mv.from + mv.to + (mv.promotion ?? ""),
-      fenBefore: mv.before,
-      fenAfter: mv.after,
-      comment,
-      clockMs: comment ? parseClockComment(comment) : null
-    });
-  }
-  return {
-    headers,
-    moves,
-    rawPgn: pgn2,
-    normalizedMovetext: moves.map((m) => m.san).join(" ")
-  };
-}
-function inferTimeClass(timeControl) {
-  if (!timeControl) return null;
-  if (/^\d+\/\d+/.test(timeControl) || timeControl === "-") return "daily";
-  const m = /^(\d+)(?:\+(\d+))?/.exec(timeControl);
-  if (!m) return null;
-  const base = parseInt(m[1]);
-  const inc = m[2] ? parseInt(m[2]) : 0;
-  const estimate = base + inc * 40;
-  if (estimate < 180) return "bullet";
-  if (estimate < 600) return "blitz";
-  if (estimate < 1800) return "rapid";
-  return "classical";
-}
-function detectUserColor(headers) {
-  const s = getSettings();
-  const names2 = [s.chesscomUsername, s.lichessUsername, s.displayName].filter(Boolean).map((n) => n.toLowerCase());
-  if (names2.length === 0) return "unknown";
-  const white = (headers.White ?? "").toLowerCase();
-  const black = (headers.Black ?? "").toLowerCase();
-  if (names2.includes(white)) return "white";
-  if (names2.includes(black)) return "black";
-  return "unknown";
-}
-function insertGame(input) {
-  const db2 = getDb();
-  const { parsed, sourcePlatform, sourceGameId, sourceGameUrl, overrides = {} } = input;
-  const h = parsed.headers;
-  const hashBasis = [
-    h.White ?? "",
-    h.Black ?? "",
-    h.Date ?? h.UTCDate ?? "",
-    h.Result ?? "",
-    parsed.normalizedMovetext
-  ].join("|");
-  const pgnHash = sha256(hashBasis);
-  if (sourcePlatform && sourceGameId) {
-    const existing = db2.prepare("SELECT id FROM games WHERE source_platform = ? AND source_game_id = ?").get(sourcePlatform, sourceGameId);
-    if (existing) return { status: "duplicate" };
-  }
-  if (sourceGameUrl) {
-    const existing = db2.prepare("SELECT id FROM games WHERE source_game_url = ?").get(sourceGameUrl);
-    if (existing) return { status: "duplicate" };
-  }
-  const existingHash = db2.prepare("SELECT id FROM games WHERE pgn_hash = ?").get(pgnHash);
-  if (existingHash) return { status: "duplicate" };
-  const id2 = uid("game");
-  const result = h.Result ?? null;
-  const ongoing = overrides.ongoing ?? result === "*";
-  const timeControl = h.TimeControl ?? null;
-  const date = (h.UTCDate ?? h.Date ?? "").replace(/\./g, "-");
-  const time = h.UTCTime ?? h.StartTime ?? null;
-  const startedAt = overrides.startedAt ?? (date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T${time ?? "00:00:00"}` : null);
-  db2.prepare(
-    `INSERT INTO games (
-      id, source_platform, source_game_id, source_game_url, raw_pgn, normalized_pgn, pgn_hash,
-      white_name, black_name, white_rating, black_rating, result, user_color,
-      time_control, time_class, variant, eco_code, opening_name,
-      started_at, ended_at, imported_at, source_metadata_json, analysis_status, ply_count, ongoing
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(
-    id2,
-    sourcePlatform,
-    sourceGameId ?? null,
-    sourceGameUrl ?? null,
-    parsed.rawPgn,
-    parsed.normalizedMovetext,
-    pgnHash,
-    h.White ?? null,
-    h.Black ?? null,
-    overrides.whiteRating ?? (h.WhiteElo ? parseInt(h.WhiteElo) || null : null),
-    overrides.blackRating ?? (h.BlackElo ? parseInt(h.BlackElo) || null : null),
-    result,
-    detectUserColor(h),
-    timeControl,
-    overrides.timeClass ?? inferTimeClass(timeControl ?? void 0),
-    (h.Variant ?? "chess").toLowerCase() === "standard" ? "chess" : (h.Variant ?? "chess").toLowerCase(),
-    overrides.ecoCode ?? h.ECO ?? null,
-    overrides.openingName ?? h.Opening ?? null,
-    startedAt,
-    overrides.endedAt ?? h.EndDate ?? startedAt,
-    now(),
-    JSON.stringify(input.sourceMetadata ?? {}),
-    "none",
-    parsed.moves.length,
-    ongoing ? 1 : 0
-  );
-  const moveStmt = db2.prepare(
-    `INSERT INTO moves (id, game_id, ply, move_number, color, san, uci, fen_before, fen_after, comment, clock_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-  );
-  for (const mv of parsed.moves) {
-    moveStmt.run(
-      uid("mv"),
-      id2,
-      mv.ply,
-      mv.moveNumber,
-      mv.color,
-      mv.san,
-      mv.uci,
-      mv.fenBefore,
-      mv.fenAfter,
-      mv.comment,
-      mv.clockMs
-    );
-  }
-  logEvent("game.imported", "game", id2, { sourcePlatform });
-  return { status: "inserted", gameId: id2 };
-}
-function importPgnText(text, source, onProgress) {
-  const chunks = splitPgn(text);
-  const result = {
-    source,
-    gamesSeen: chunks.length,
-    gamesImported: 0,
-    duplicatesSkipped: 0,
-    failed: [],
-    createdGameIds: []
-  };
-  let i = 0;
-  for (const chunk of chunks) {
-    i++;
-    try {
-      const parsed = parsePgnGame(chunk);
-      if (parsed.moves.length === 0) {
-        result.failed.push({ sourceRef: `game ${i}`, reason: "No moves found" });
-        continue;
-      }
-      const h = parsed.headers;
-      const url = h.Link ?? (h.Site?.startsWith("http") ? h.Site : null);
-      const outcome = insertGame({
-        parsed,
-        sourcePlatform: source,
-        sourceGameUrl: url
-      });
-      if (outcome.status === "inserted") {
-        result.gamesImported++;
-        result.createdGameIds.push(outcome.gameId);
-      } else {
-        result.duplicatesSkipped++;
-      }
-    } catch (e) {
-      result.failed.push({ sourceRef: `game ${i}`, reason: e.message });
-    }
-    onProgress?.(i, chunks.length);
-  }
-  broadcast({ type: "games:changed", payload: null });
-  return result;
-}
-function detectSource(input) {
-  const text = input.trim();
-  if (!text) return { kind: "unknown" };
-  if (text.startsWith("[") || /^1\.\s/.test(text)) return { kind: "pgn", pgn: text };
-  let url = null;
-  try {
-    url = new URL(text);
-  } catch {
-    return { kind: "unknown" };
-  }
-  const host = url.hostname.toLowerCase();
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (host === "www.chess.com" || host === "chess.com" || host === "api.chess.com") {
-    if (parts[0] === "member" && parts[1]) return { kind: "chesscom-user", username: parts[1] };
-    if (parts[0] === "games" && parts[1] === "archive" && parts[2])
-      return { kind: "chesscom-user", username: parts[2] };
-    if (parts[0] === "pub" && parts[1] === "player" && parts[2])
-      return { kind: "chesscom-user", username: parts[2] };
-    if (parts[0] === "game" || parts[0] === "live" || parts[0] === "daily")
-      return { kind: "chesscom-game", url: text };
-    return { kind: "unknown" };
-  }
-  if (host === "lichess.org" || host === "www.lichess.org") {
-    if (parts[0] === "@" || parts[0]?.startsWith("@")) {
-      const username = parts[0] === "@" ? parts[1] : parts[0].slice(1);
-      if (username) return { kind: "lichess-user", username };
-    }
-    if (parts[0] === "api" && parts[1] === "games" && parts[2] === "user" && parts[3])
-      return { kind: "lichess-user", username: parts[3] };
-    if (parts[0] === "game" && parts[1] === "export" && parts[2])
-      return { kind: "lichess-game", gameId: parts[2].slice(0, 8) };
-    if (parts[0] && /^[a-zA-Z0-9]{8,12}$/.test(parts[0]))
-      return { kind: "lichess-game", gameId: parts[0].slice(0, 8) };
-    return { kind: "unknown" };
-  }
-  return { kind: "unknown" };
-}
 const HANDSHAKE_TIMEOUT_MS = 1e4;
 const READY_TIMEOUT_MS = 1e4;
 const GO_HARD_TIMEOUT_MS = 12e4;
@@ -4571,6 +4245,104 @@ function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
     now()
   );
 }
+function acplToAccuracy(acpl) {
+  const raw = 100 * Math.exp(-acpl / 200);
+  return Math.max(0, Math.min(100, Math.round(raw * 10) / 10));
+}
+function computeAccuracy(moves, analyses) {
+  const totals = {
+    white: { loss: 0, count: 0 },
+    black: { loss: 0, count: 0 }
+  };
+  for (const move of moves) {
+    const before = analyses[move.ply - 1];
+    const after = analyses[move.ply];
+    const bestBefore = before?.multiPv[0];
+    if (!bestBefore) continue;
+    const evalBefore = Math.max(-1e3, Math.min(1e3, scoreToCp(bestBefore.score)));
+    const afterBest = after?.multiPv[0];
+    const resultForMover = afterBest ? Math.max(-1e3, Math.min(1e3, -scoreToCp(afterBest.score))) : evalBefore;
+    const loss = Math.min(1e3, Math.max(0, evalBefore - resultForMover));
+    const side = move.color;
+    totals[side].loss += loss;
+    totals[side].count++;
+  }
+  return {
+    white: totals.white.count > 0 ? acplToAccuracy(totals.white.loss / totals.white.count) : null,
+    black: totals.black.count > 0 ? acplToAccuracy(totals.black.loss / totals.black.count) : null
+  };
+}
+function classifyAndStoreMistakes(gameId, moves, analyses) {
+  const db2 = getDb();
+  const game = db2.prepare("SELECT user_color, white_name, black_name FROM games WHERE id = ?").get(gameId);
+  if (!game) return;
+  db2.prepare(
+    `DELETE FROM exercises WHERE origin_type = 'mistake' AND origin_id IN (SELECT id FROM mistakes WHERE game_id = ?)`
+  ).run(gameId);
+  db2.prepare("DELETE FROM mistakes WHERE game_id = ?").run(gameId);
+  const userColor = game.user_color;
+  const opponent = userColor === "black" ? game.white_name : game.black_name;
+  let exercisesCreated = 0;
+  let biggestSkipped = null;
+  for (const move of moves) {
+    if (userColor !== "unknown" && move.color !== userColor) continue;
+    const before = analyses[move.ply - 1];
+    const after = analyses[move.ply];
+    if (!before || !after) continue;
+    const lowOnTime = move.clock_ms !== null && move.clock_ms < 3e4;
+    const cls = classify(move, before, after, lowOnTime);
+    if (!cls) continue;
+    const mistakeId = uid("mis");
+    db2.prepare(
+      `INSERT INTO mistakes (id, game_id, ply, severity, eval_loss_cp, theme_tags_json, human_summary, why_bad, better_move_san, better_move_uci, training_action, confidence, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      mistakeId,
+      gameId,
+      move.ply,
+      cls.severity,
+      cls.evalLossCp,
+      JSON.stringify(cls.themeTags),
+      cls.humanSummary,
+      cls.whyBad,
+      cls.bestLine.moveSan ?? null,
+      cls.bestLine.moveUci,
+      cls.trainingAction,
+      cls.confidence,
+      now()
+    );
+    logEvent("mistake.created", "mistake", mistakeId, { gameId, severity: cls.severity });
+    if (cls.severity !== "inaccuracy" && cls.confidence !== "low") {
+      exerciseFromMistake(mistakeId, gameId, move, cls, opponent);
+      exercisesCreated++;
+    } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
+      biggestSkipped = { move, cls };
+    }
+  }
+  if (exercisesCreated === 0 && biggestSkipped) {
+    exerciseFromMistake(uid("mis"), gameId, biggestSkipped.move, biggestSkipped.cls, opponent);
+  }
+  const accuracy = computeAccuracy(moves, analyses);
+  db2.prepare("UPDATE games SET accuracy_white = ?, accuracy_black = ? WHERE id = ?").run(
+    accuracy.white,
+    accuracy.black,
+    gameId
+  );
+}
+function reclassifyGame(gameId) {
+  const db2 = getDb();
+  const moves = db2.prepare(
+    "SELECT ply, move_number, color, san, uci, fen_before, fen_after, clock_ms FROM moves WHERE game_id = ? ORDER BY ply"
+  ).all(gameId);
+  if (moves.length === 0) return;
+  const analysisRows = getAnalysisForGame(gameId);
+  if (analysisRows.length === 0) return;
+  const analyses = [];
+  for (const a of analysisRows) analyses[a.ply] = a;
+  classifyAndStoreMistakes(gameId, moves, analyses);
+  broadcast({ type: "games:changed", payload: null });
+  broadcast({ type: "exercises:changed", payload: null });
+}
 async function analyzeGameJob(payload, ctx) {
   const { gameId, profileId } = payload;
   const db2 = getDb();
@@ -4648,49 +4420,7 @@ async function analyzeGameJob(payload, ctx) {
       broadcast({ type: "games:changed", payload: null });
       return;
     }
-    db2.prepare("DELETE FROM mistakes WHERE game_id = ?").run(gameId);
-    const userColor = game.user_color;
-    const opponent = userColor === "black" ? game.white_name : game.black_name;
-    let exercisesCreated = 0;
-    let biggestSkipped = null;
-    for (const move of moves) {
-      if (userColor !== "unknown" && move.color !== userColor) continue;
-      const before = analyses[move.ply - 1];
-      const after = analyses[move.ply];
-      if (!before || !after) continue;
-      const lowOnTime = move.clock_ms !== null && move.clock_ms < 3e4;
-      const cls = classify(move, before, after, lowOnTime);
-      if (!cls) continue;
-      const mistakeId = uid("mis");
-      db2.prepare(
-        `INSERT INTO mistakes (id, game_id, ply, severity, eval_loss_cp, theme_tags_json, human_summary, why_bad, better_move_san, better_move_uci, training_action, confidence, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).run(
-        mistakeId,
-        gameId,
-        move.ply,
-        cls.severity,
-        cls.evalLossCp,
-        JSON.stringify(cls.themeTags),
-        cls.humanSummary,
-        cls.whyBad,
-        cls.bestLine.moveSan ?? null,
-        cls.bestLine.moveUci,
-        cls.trainingAction,
-        cls.confidence,
-        now()
-      );
-      logEvent("mistake.created", "mistake", mistakeId, { gameId, severity: cls.severity });
-      if (cls.severity !== "inaccuracy" && cls.confidence !== "low") {
-        exerciseFromMistake(mistakeId, gameId, move, cls, opponent);
-        exercisesCreated++;
-      } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
-        biggestSkipped = { move, cls };
-      }
-    }
-    if (exercisesCreated === 0 && biggestSkipped) {
-      exerciseFromMistake(uid("mis"), gameId, biggestSkipped.move, biggestSkipped.cls, opponent);
-    }
+    classifyAndStoreMistakes(gameId, moves, analyses);
     db2.prepare("UPDATE games SET analysis_status = ? WHERE id = ?").run("done", gameId);
     logEvent("game.analyzed", "game", gameId, { profileId });
     broadcast({ type: "games:changed", payload: null });
@@ -4739,6 +4469,403 @@ function getMistakesForGame(gameId) {
     confidence: row.confidence,
     createdAt: row.created_at
   }));
+}
+function backfillUserColors() {
+  const db2 = getDb();
+  const settings = getSettings();
+  const names2 = [settings.chesscomUsername, settings.lichessUsername, settings.displayName].filter(Boolean).map((n) => n.toLowerCase());
+  if (names2.length === 0) return { updatedGames: 0, reclassifiedGames: 0 };
+  const rows = db2.prepare("SELECT id, white_name, black_name, analysis_status FROM games WHERE user_color = 'unknown'").all();
+  let updated = 0;
+  let reclassified = 0;
+  for (const row of rows) {
+    const white = (row.white_name ?? "").toLowerCase();
+    const black = (row.black_name ?? "").toLowerCase();
+    let color = null;
+    if (names2.includes(white)) color = "white";
+    else if (names2.includes(black)) color = "black";
+    if (!color) continue;
+    db2.prepare("UPDATE games SET user_color = ? WHERE id = ?").run(color, row.id);
+    updated++;
+    if (row.analysis_status === "done") {
+      try {
+        reclassifyGame(row.id);
+        reclassified++;
+      } catch {
+      }
+    }
+  }
+  if (updated > 0) broadcast({ type: "games:changed", payload: null });
+  return { updatedGames: updated, reclassifiedGames: reclassified };
+}
+function backfillMissingAccuracy() {
+  const db2 = getDb();
+  const rows = db2.prepare(
+    "SELECT id FROM games WHERE analysis_status = 'done' AND accuracy_white IS NULL AND accuracy_black IS NULL"
+  ).all();
+  let fixed = 0;
+  for (const row of rows) {
+    try {
+      reclassifyGame(row.id);
+      fixed++;
+    } catch {
+    }
+  }
+  if (fixed > 0) broadcast({ type: "games:changed", payload: null });
+  return fixed;
+}
+function rowToGame(row) {
+  return {
+    id: row.id,
+    sourcePlatform: row.source_platform ?? null,
+    sourceGameId: row.source_game_id ?? null,
+    sourceGameUrl: row.source_game_url ?? null,
+    rawPgn: row.raw_pgn,
+    whiteName: row.white_name ?? null,
+    blackName: row.black_name ?? null,
+    whiteRating: row.white_rating ?? null,
+    blackRating: row.black_rating ?? null,
+    result: row.result ?? null,
+    userColor: row.user_color,
+    timeControl: row.time_control ?? null,
+    timeClass: row.time_class ?? null,
+    variant: row.variant,
+    ecoCode: row.eco_code ?? null,
+    openingName: row.opening_name ?? null,
+    startedAt: row.started_at ?? null,
+    endedAt: row.ended_at ?? null,
+    importedAt: row.imported_at,
+    analysisStatus: row.analysis_status,
+    plyCount: row.ply_count,
+    mistakeCount: row.mistake_count ?? 0,
+    ongoing: Boolean(row.ongoing),
+    accuracyWhite: row.accuracy_white ?? null,
+    accuracyBlack: row.accuracy_black ?? null
+  };
+}
+function listGames(filters = {}) {
+  const clauses = [];
+  const params = [];
+  if (filters.text) {
+    clauses.push("(white_name LIKE ? OR black_name LIKE ? OR opening_name LIKE ? OR eco_code LIKE ?)");
+    const like = `%${filters.text}%`;
+    params.push(like, like, like, like);
+  }
+  if (filters.platform) {
+    clauses.push("source_platform = ?");
+    params.push(filters.platform);
+  }
+  if (filters.timeClass) {
+    clauses.push("time_class = ?");
+    params.push(filters.timeClass);
+  }
+  if (filters.color && filters.color !== void 0) {
+    clauses.push("user_color = ?");
+    params.push(filters.color);
+  }
+  if (filters.result) {
+    if (filters.result === "draw") clauses.push("result = '1/2-1/2'");
+    else if (filters.result === "win")
+      clauses.push(
+        "((user_color = 'white' AND result = '1-0') OR (user_color = 'black' AND result = '0-1'))"
+      );
+    else
+      clauses.push(
+        "((user_color = 'white' AND result = '0-1') OR (user_color = 'black' AND result = '1-0'))"
+      );
+  }
+  if (filters.analyzed !== void 0) {
+    clauses.push(filters.analyzed ? "analysis_status = 'done'" : "analysis_status != 'done'");
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const limit2 = Math.min(filters.limit ?? 200, 1e3);
+  const offset = filters.offset ?? 0;
+  const rows = getDb().prepare(
+    `SELECT g.*, (SELECT COUNT(*) FROM mistakes m WHERE m.game_id = g.id) AS mistake_count
+       FROM games g ${where}
+       ORDER BY COALESCE(g.ended_at, g.imported_at) DESC LIMIT ? OFFSET ?`
+  ).all(...params, limit2, offset);
+  return rows.map(rowToGame);
+}
+function getGame(id2) {
+  const row = getDb().prepare("SELECT g.*, (SELECT COUNT(*) FROM mistakes m WHERE m.game_id = g.id) AS mistake_count FROM games g WHERE g.id = ?").get(id2);
+  return row ? rowToGame(row) : null;
+}
+function getMoves(gameId) {
+  const rows = getDb().prepare("SELECT * FROM moves WHERE game_id = ? ORDER BY ply").all(gameId);
+  return rows.map((row) => ({
+    gameId: row.game_id,
+    ply: row.ply,
+    moveNumber: row.move_number,
+    color: row.color,
+    san: row.san,
+    uci: row.uci,
+    fenBefore: row.fen_before,
+    fenAfter: row.fen_after,
+    comment: row.comment ?? null,
+    clockMs: row.clock_ms ?? null
+  }));
+}
+function deleteGame(id2) {
+  const db2 = getDb();
+  db2.prepare(
+    `DELETE FROM exercises WHERE origin_type = 'mistake' AND origin_id IN (SELECT id FROM mistakes WHERE game_id = ?)`
+  ).run(id2);
+  db2.prepare("DELETE FROM games WHERE id = ?").run(id2);
+  broadcast({ type: "games:changed", payload: null });
+  broadcast({ type: "exercises:changed", payload: null });
+}
+function exportPgn(gameIds) {
+  const stmt = getDb().prepare("SELECT raw_pgn FROM games WHERE id = ?");
+  return gameIds.map((id2) => stmt.get(id2)?.raw_pgn).filter(Boolean).join("\n\n");
+}
+function splitPgn(text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const games = [];
+  let current = [];
+  let inMoves = false;
+  for (const line of lines) {
+    const isHeader = /^\s*\[\w+\s+"/.test(line);
+    if (isHeader && inMoves) {
+      if (current.join("\n").trim()) games.push(current.join("\n").trim());
+      current = [];
+      inMoves = false;
+    }
+    if (!isHeader && line.trim() !== "") inMoves = true;
+    current.push(line);
+  }
+  if (current.join("\n").trim()) games.push(current.join("\n").trim());
+  return games;
+}
+function parseHeaders(pgn2) {
+  const headers = {};
+  const re = /^\s*\[(\w+)\s+"((?:[^"\\]|\\.)*)"\]/gm;
+  let m;
+  while ((m = re.exec(pgn2)) !== null) {
+    headers[m[1]] = m[2].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return headers;
+}
+function parseClockComment(comment) {
+  const m = /\[%clk\s+(\d+):(\d+):(\d+(?:\.\d+)?)\]/.exec(comment);
+  if (!m) return null;
+  return Math.round((parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3])) * 1e3);
+}
+function parsePgnGame(pgn2) {
+  const headers = parseHeaders(pgn2);
+  const chess = new Chess();
+  chess.loadPgn(pgn2, { strict: false });
+  const commentsByFen = /* @__PURE__ */ new Map();
+  for (const c of chess.getComments()) commentsByFen.set(c.fen, c.comment);
+  const history = chess.history({ verbose: true });
+  const moves = [];
+  let ply = 0;
+  for (const mv of history) {
+    ply++;
+    const comment = commentsByFen.get(mv.after) ?? null;
+    moves.push({
+      ply,
+      moveNumber: Math.ceil(ply / 2),
+      color: mv.color === "w" ? "white" : "black",
+      san: mv.san,
+      uci: mv.from + mv.to + (mv.promotion ?? ""),
+      fenBefore: mv.before,
+      fenAfter: mv.after,
+      comment,
+      clockMs: comment ? parseClockComment(comment) : null
+    });
+  }
+  return {
+    headers,
+    moves,
+    rawPgn: pgn2,
+    normalizedMovetext: moves.map((m) => m.san).join(" ")
+  };
+}
+function inferTimeClass(timeControl) {
+  if (!timeControl) return null;
+  if (/^\d+\/\d+/.test(timeControl) || timeControl === "-") return "daily";
+  const m = /^(\d+)(?:\+(\d+))?/.exec(timeControl);
+  if (!m) return null;
+  const base = parseInt(m[1]);
+  const inc = m[2] ? parseInt(m[2]) : 0;
+  const estimate = base + inc * 40;
+  if (estimate < 180) return "bullet";
+  if (estimate < 600) return "blitz";
+  if (estimate < 1800) return "rapid";
+  return "classical";
+}
+function detectUserColor(headers, knownUsername) {
+  const s = getSettings();
+  const names2 = [knownUsername, s.chesscomUsername, s.lichessUsername, s.displayName].filter(Boolean).map((n) => n.toLowerCase());
+  if (names2.length === 0) return "unknown";
+  const white = (headers.White ?? "").toLowerCase();
+  const black = (headers.Black ?? "").toLowerCase();
+  if (names2.includes(white)) return "white";
+  if (names2.includes(black)) return "black";
+  return "unknown";
+}
+function insertGame(input) {
+  const db2 = getDb();
+  const { parsed, sourcePlatform, sourceGameId, sourceGameUrl, overrides = {} } = input;
+  const h = parsed.headers;
+  const hashBasis = [
+    h.White ?? "",
+    h.Black ?? "",
+    h.Date ?? h.UTCDate ?? "",
+    h.Result ?? "",
+    parsed.normalizedMovetext
+  ].join("|");
+  const pgnHash = sha256(hashBasis);
+  if (sourcePlatform && sourceGameId) {
+    const existing = db2.prepare("SELECT id FROM games WHERE source_platform = ? AND source_game_id = ?").get(sourcePlatform, sourceGameId);
+    if (existing) return { status: "duplicate" };
+  }
+  if (sourceGameUrl) {
+    const existing = db2.prepare("SELECT id FROM games WHERE source_game_url = ?").get(sourceGameUrl);
+    if (existing) return { status: "duplicate" };
+  }
+  const existingHash = db2.prepare("SELECT id FROM games WHERE pgn_hash = ?").get(pgnHash);
+  if (existingHash) return { status: "duplicate" };
+  const id2 = uid("game");
+  const result = h.Result ?? null;
+  const ongoing = overrides.ongoing ?? result === "*";
+  const timeControl = h.TimeControl ?? null;
+  const date = (h.UTCDate ?? h.Date ?? "").replace(/\./g, "-");
+  const time = h.UTCTime ?? h.StartTime ?? null;
+  const startedAt = overrides.startedAt ?? (date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T${time ?? "00:00:00"}` : null);
+  db2.prepare(
+    `INSERT INTO games (
+      id, source_platform, source_game_id, source_game_url, raw_pgn, normalized_pgn, pgn_hash,
+      white_name, black_name, white_rating, black_rating, result, user_color,
+      time_control, time_class, variant, eco_code, opening_name,
+      started_at, ended_at, imported_at, source_metadata_json, analysis_status, ply_count, ongoing
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    id2,
+    sourcePlatform,
+    sourceGameId ?? null,
+    sourceGameUrl ?? null,
+    parsed.rawPgn,
+    parsed.normalizedMovetext,
+    pgnHash,
+    h.White ?? null,
+    h.Black ?? null,
+    overrides.whiteRating ?? (h.WhiteElo ? parseInt(h.WhiteElo) || null : null),
+    overrides.blackRating ?? (h.BlackElo ? parseInt(h.BlackElo) || null : null),
+    result,
+    detectUserColor(h, overrides.knownUsername),
+    timeControl,
+    overrides.timeClass ?? inferTimeClass(timeControl ?? void 0),
+    (h.Variant ?? "chess").toLowerCase() === "standard" ? "chess" : (h.Variant ?? "chess").toLowerCase(),
+    overrides.ecoCode ?? h.ECO ?? null,
+    overrides.openingName ?? h.Opening ?? null,
+    startedAt,
+    overrides.endedAt ?? h.EndDate ?? startedAt,
+    now(),
+    JSON.stringify(input.sourceMetadata ?? {}),
+    "none",
+    parsed.moves.length,
+    ongoing ? 1 : 0
+  );
+  const moveStmt = db2.prepare(
+    `INSERT INTO moves (id, game_id, ply, move_number, color, san, uci, fen_before, fen_after, comment, clock_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  );
+  for (const mv of parsed.moves) {
+    moveStmt.run(
+      uid("mv"),
+      id2,
+      mv.ply,
+      mv.moveNumber,
+      mv.color,
+      mv.san,
+      mv.uci,
+      mv.fenBefore,
+      mv.fenAfter,
+      mv.comment,
+      mv.clockMs
+    );
+  }
+  logEvent("game.imported", "game", id2, { sourcePlatform });
+  return { status: "inserted", gameId: id2 };
+}
+function importPgnText(text, source, onProgress) {
+  const chunks = splitPgn(text);
+  const result = {
+    source,
+    gamesSeen: chunks.length,
+    gamesImported: 0,
+    duplicatesSkipped: 0,
+    failed: [],
+    createdGameIds: []
+  };
+  let i = 0;
+  for (const chunk of chunks) {
+    i++;
+    try {
+      const parsed = parsePgnGame(chunk);
+      if (parsed.moves.length === 0) {
+        result.failed.push({ sourceRef: `game ${i}`, reason: "No moves found" });
+        continue;
+      }
+      const h = parsed.headers;
+      const url = h.Link ?? (h.Site?.startsWith("http") ? h.Site : null);
+      const outcome = insertGame({
+        parsed,
+        sourcePlatform: source,
+        sourceGameUrl: url
+      });
+      if (outcome.status === "inserted") {
+        result.gamesImported++;
+        result.createdGameIds.push(outcome.gameId);
+      } else {
+        result.duplicatesSkipped++;
+      }
+    } catch (e) {
+      result.failed.push({ sourceRef: `game ${i}`, reason: e.message });
+    }
+    onProgress?.(i, chunks.length);
+  }
+  broadcast({ type: "games:changed", payload: null });
+  return result;
+}
+function detectSource(input) {
+  const text = input.trim();
+  if (!text) return { kind: "unknown" };
+  if (text.startsWith("[") || /^1\.\s/.test(text)) return { kind: "pgn", pgn: text };
+  let url = null;
+  try {
+    url = new URL(text);
+  } catch {
+    return { kind: "unknown" };
+  }
+  const host = url.hostname.toLowerCase();
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (host === "www.chess.com" || host === "chess.com" || host === "api.chess.com") {
+    if (parts[0] === "member" && parts[1]) return { kind: "chesscom-user", username: parts[1] };
+    if (parts[0] === "games" && parts[1] === "archive" && parts[2])
+      return { kind: "chesscom-user", username: parts[2] };
+    if (parts[0] === "pub" && parts[1] === "player" && parts[2])
+      return { kind: "chesscom-user", username: parts[2] };
+    if (parts[0] === "game" || parts[0] === "live" || parts[0] === "daily")
+      return { kind: "chesscom-game", url: text };
+    return { kind: "unknown" };
+  }
+  if (host === "lichess.org" || host === "www.lichess.org") {
+    if (parts[0] === "@" || parts[0]?.startsWith("@")) {
+      const username = parts[0] === "@" ? parts[1] : parts[0].slice(1);
+      if (username) return { kind: "lichess-user", username };
+    }
+    if (parts[0] === "api" && parts[1] === "games" && parts[2] === "user" && parts[3])
+      return { kind: "lichess-user", username: parts[3] };
+    if (parts[0] === "game" && parts[1] === "export" && parts[2])
+      return { kind: "lichess-game", gameId: parts[2].slice(0, 8) };
+    if (parts[0] && /^[a-zA-Z0-9]{8,12}$/.test(parts[0]))
+      return { kind: "lichess-game", gameId: parts[0].slice(0, 8) };
+    return { kind: "unknown" };
+  }
+  return { kind: "unknown" };
 }
 const handlers = /* @__PURE__ */ new Map();
 const cancelRequested = /* @__PURE__ */ new Set();
@@ -12610,7 +12737,9 @@ function rowToNode(row) {
     source: JSON.parse(row.source_json),
     dueAt: row.due_at ?? null,
     intervalDays: row.interval_days,
-    ease: row.ease
+    ease: row.ease,
+    openingName: row.opening_name ?? null,
+    lineName: row.line_name ?? null
   };
 }
 function listNodes(color) {
@@ -12629,8 +12758,8 @@ function addNode(args) {
   });
   const id2 = uid("rep");
   db2.prepare(
-    `INSERT INTO repertoire_nodes (id, color, parent_id, fen_before, move_uci, move_san, priority, status, comment, source_json, due_at, interval_days, ease)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO repertoire_nodes (id, color, parent_id, fen_before, move_uci, move_san, priority, status, comment, source_json, due_at, interval_days, ease, opening_name, line_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     id2,
     args.color,
@@ -12644,7 +12773,9 @@ function addNode(args) {
     JSON.stringify(args.source ?? { type: "manual" }),
     now(),
     0,
-    2.5
+    2.5,
+    args.openingName ?? null,
+    args.lineName ?? null
   );
   broadcast({ type: "repertoire:changed", payload: null });
   const row = db2.prepare("SELECT * FROM repertoire_nodes WHERE id = ?").get(id2);
@@ -12652,9 +12783,14 @@ function addNode(args) {
 }
 function addLineFromGame(gameId, uptoPly) {
   const db2 = getDb();
-  const game = db2.prepare("SELECT user_color FROM games WHERE id = ?").get(gameId);
+  const game = db2.prepare("SELECT user_color, opening_name, eco_code, white_name, black_name FROM games WHERE id = ?").get(
+    gameId
+  );
   if (!game) throw new Error("Game not found");
   const color = game.user_color === "unknown" ? "white" : game.user_color;
+  const openingName = game.opening_name ?? game.eco_code ?? "From a game";
+  const opponent = color === "white" ? game.black_name : game.white_name;
+  const lineName = opponent ? `vs ${opponent}` : null;
   const moves = db2.prepare("SELECT ply, color, uci, fen_before FROM moves WHERE game_id = ? AND ply <= ? ORDER BY ply").all(gameId, uptoPly);
   const created = [];
   let parentId = null;
@@ -12664,7 +12800,9 @@ function addLineFromGame(gameId, uptoPly) {
       fenBefore: mv.fen_before,
       moveUci: mv.uci,
       parentId,
-      source: { type: "game", gameId }
+      source: { type: "game", gameId },
+      openingName,
+      lineName
     });
     parentId = node2.id;
     if (mv.color === color) created.push(node2);
@@ -12687,7 +12825,9 @@ function addOpeningLine(args) {
       moveUci: mv.from + mv.to + (mv.promotion ?? ""),
       parentId,
       comment: isUserMove && isLast && args.comment ? `${label}. ${args.comment}` : isUserMove ? label : void 0,
-      source: { type: "library" }
+      source: { type: "library" },
+      openingName: args.openingName,
+      lineName: args.lineName ?? null
     });
     parentId = node2.id;
     if (isUserMove) created.push(node2);
@@ -12738,7 +12878,14 @@ function setNodePriority(id2, priority) {
   broadcast({ type: "repertoire:changed", payload: null });
 }
 function deleteNode(id2) {
-  getDb().prepare("DELETE FROM repertoire_nodes WHERE id = ? OR parent_id = ?").run(id2, id2);
+  const db2 = getDb();
+  const toDelete = [id2];
+  for (let i = 0; i < toDelete.length; i++) {
+    const children = db2.prepare("SELECT id FROM repertoire_nodes WHERE parent_id = ?").all(toDelete[i]);
+    for (const c of children) toDelete.push(c.id);
+  }
+  const placeholders = toDelete.map(() => "?").join(",");
+  db2.prepare(`DELETE FROM repertoire_nodes WHERE id IN (${placeholders})`).run(...toDelete);
   broadcast({ type: "repertoire:changed", payload: null });
 }
 const LIVE_MULTIPV = 2;
@@ -12927,13 +13074,15 @@ const ACTION_LABELS = {
   strategy: "Strategic judgment",
   "time-management": "Time management"
 };
-function computeStreak() {
+function trainingDays() {
   const rows = getDb().prepare(
     `SELECT DISTINCT substr(created_at, 1, 10) AS day FROM app_events
        WHERE event_type IN ('exercise.completed', 'game.analyzed', 'lesson.published') ORDER BY day DESC LIMIT 60`
   ).all();
-  if (rows.length === 0) return 0;
-  const days = rows.map((r) => r.day);
+  return rows.map((r) => r.day);
+}
+function computeStreak(days) {
+  if (days.length === 0) return 0;
   const today = /* @__PURE__ */ new Date();
   let streak = 0;
   for (let i = 0; i < 60; i++) {
@@ -12942,6 +13091,15 @@ function computeStreak() {
     else if (i > 0) break;
   }
   return streak;
+}
+function computeActiveDays(days) {
+  const today = /* @__PURE__ */ new Date();
+  const out = [];
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 864e5).toISOString().slice(0, 10);
+    if (days.includes(d)) out.push(d);
+  }
+  return out;
 }
 function computeTodayPlan() {
   const db2 = getDb();
@@ -12957,11 +13115,14 @@ function computeTodayPlan() {
     `SELECT training_action AS tag, COUNT(*) AS count, SUM(COALESCE(eval_loss_cp, 0)) AS impact
        FROM mistakes WHERE created_at >= ? GROUP BY training_action ORDER BY impact DESC LIMIT 5`
   ).all(since);
-  const weaknesses = weaknessRows.map((w) => ({
-    tag: w.tag,
-    count: w.count,
-    evidence: `${w.count} mistakes costing ~${Math.round(w.impact / 100)} pawns total in your recent games`
-  }));
+  const weaknesses = weaknessRows.map((w) => {
+    const pawns = Math.round(w.impact / 100);
+    return {
+      tag: w.tag,
+      count: w.count,
+      evidence: `${w.count} mistake${w.count === 1 ? "" : "s"} costing ~${pawns} pawn${pawns === 1 ? "" : "s"} in your recent games`
+    };
+  });
   if (gameCount === 0) {
     tasks.push({
       id: "task-import",
@@ -13029,12 +13190,14 @@ function computeTodayPlan() {
     }
   }
   const weeklyTheme = weaknesses[0] ? `${ACTION_LABELS[weaknesses[0].tag] ?? weaknesses[0].tag}: your biggest leak this month` : "Build the habit: import, analyze, practice";
+  const days = trainingDays();
   return {
     date: now().slice(0, 10),
     weeklyTheme,
     tasks: tasks.slice(0, 5),
     weaknesses,
-    streakDays: computeStreak(),
+    streakDays: computeStreak(days),
+    activeDays: computeActiveDays(days),
     dueExercises: dueEx,
     dueRepertoire: dueRep,
     unreviewedGames: unreviewed
@@ -13225,6 +13388,7 @@ function queueAnalysis(gameIds, profileId) {
 function registerIpc() {
   handle("settings:get", () => getSettings());
   handle("settings:set", (patch) => setSettings(patch));
+  handle("identity:backfill", () => backfillUserColors());
   handle("games:list", (filters) => listGames(filters ?? {}));
   handle("games:get", (id2) => getGame(id2));
   handle("games:moves", (id2) => getMoves(id2));
@@ -13412,8 +13576,9 @@ async function importChessCom(args, ctx) {
             blackRating: g.black?.rating ?? null,
             timeClass: g.time_class ?? null,
             endedAt: g.end_time ? new Date(g.end_time * 1e3).toISOString() : null,
-            ongoing: false
+            ongoing: false,
             // archives only contain finished games
+            knownUsername: username
           }
         });
         if (outcome.status === "inserted") {
@@ -13431,7 +13596,7 @@ async function importChessCom(args, ctx) {
   return result;
 }
 const ONGOING_STATUSES = /* @__PURE__ */ new Set(["created", "started"]);
-function handleGame(g, result) {
+function handleGame(g, result, knownUsername) {
   result.gamesSeen++;
   if (g.variant && g.variant !== "standard") return;
   if (!g.pgn) {
@@ -13458,7 +13623,8 @@ function handleGame(g, result) {
         openingName: g.opening?.name ?? null,
         startedAt: g.createdAt ? new Date(g.createdAt).toISOString() : null,
         endedAt: g.lastMoveAt ? new Date(g.lastMoveAt).toISOString() : null,
-        ongoing: false
+        ongoing: false,
+        knownUsername
       }
     });
     if (outcome.status === "inserted") {
@@ -13523,14 +13689,14 @@ async function importLichess(args, ctx) {
         buffer = buffer.slice(nl + 1);
         if (!line) continue;
         try {
-          handleGame(JSON.parse(line), result);
+          handleGame(JSON.parse(line), result, username);
         } catch (e) {
           result.failed.push({ sourceRef: "ndjson-line", reason: e.message });
         }
         ctx.setProgress(result.gamesSeen, max, `Imported ${result.gamesImported} games…`);
       }
     }
-    if (buffer.trim()) handleGame(JSON.parse(buffer.trim()), result);
+    if (buffer.trim()) handleGame(JSON.parse(buffer.trim()), result, username);
   } catch (e) {
     if (e.name !== "AbortError") throw e;
   }
@@ -13640,6 +13806,12 @@ electron.app.whenReady().then(async () => {
     fs.mkdirSync(path.join(dataDir, dir), { recursive: true });
   }
   seedContent(resourcesDir());
+  try {
+    backfillUserColors();
+    backfillMissingAccuracy();
+  } catch (e) {
+    console.warn("Backfill failed on startup:", e);
+  }
   registerIpc();
   registerJobHandlers();
   recoverJobs();

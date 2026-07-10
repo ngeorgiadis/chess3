@@ -1,11 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
 import type { ImportResult, JobRecord } from '@shared/types'
 
 type Tab = 'username' | 'url' | 'pgn'
 
-function ResultSummary({ result }: { result: ImportResult }): React.JSX.Element {
+function ResultSummary({
+  result,
+  alreadyQueued,
+  onAnalyze,
+  onViewGames
+}: {
+  result: ImportResult
+  alreadyQueued: boolean
+  onAnalyze: () => void
+  onViewGames: () => void
+}): React.JSX.Element {
+  const [analyzing, setAnalyzing] = useState(false)
   return (
     <div className={`callout ${result.gamesImported > 0 ? 'success' : 'warn'}`}>
       <b>{result.gamesImported}</b> games imported, <b>{result.duplicatesSkipped}</b> duplicates skipped
@@ -22,14 +33,35 @@ function ResultSummary({ result }: { result: ImportResult }): React.JSX.Element 
           </ul>
         </>
       )}
+      {result.createdGameIds.length > 0 && (
+        <div className="row" style={{ marginTop: 10, flexWrap: 'wrap' }}>
+          {!alreadyQueued && (
+            <button
+              className="small primary"
+              disabled={analyzing}
+              onClick={() => {
+                setAnalyzing(true)
+                onAnalyze()
+              }}
+            >
+              {analyzing ? 'Queuing…' : `Analyze ${result.createdGameIds.length} game${result.createdGameIds.length === 1 ? '' : 's'} now`}
+            </button>
+          )}
+          <button className="small" onClick={onViewGames}>
+            View games
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
 export function ImportModal(): React.JSX.Element {
   const setOpen = useStore((s) => s.setImportModalOpen)
+  const navigate = useStore((s) => s.navigate)
   const jobs = useStore((s) => s.jobs)
   const settings = useStore((s) => s.settings)
+  const refreshSettings = useStore((s) => s.refreshSettings)
 
   const [tab, setTab] = useState<Tab>('username')
   const [platform, setPlatform] = useState<'chesscom' | 'lichess'>('chesscom')
@@ -67,13 +99,24 @@ export function ImportModal(): React.JSX.Element {
     }
   }
 
+  async function saveUsernameIfNeeded(p: 'chesscom' | 'lichess', name: string): Promise<void> {
+    const key = p === 'chesscom' ? 'chesscomUsername' : 'lichessUsername'
+    if (settings?.[key] === name) return
+    await api.settings.set({ [key]: name })
+    await refreshSettings()
+    // Games imported earlier under this same identity may have been recorded as 'unknown'.
+    await api.identity.backfill()
+  }
+
   const startUsernameImport = (): Promise<void> =>
     run(async () => {
-      if (!username.trim()) throw new Error('Enter a username first.')
+      const name = username.trim()
+      if (!name) throw new Error('Enter a username first.')
+      await saveUsernameIfNeeded(platform, name)
       let job: JobRecord
       if (platform === 'chesscom') {
         job = await api.import.chesscom({
-          username: username.trim(),
+          username: name,
           maxGames,
           fromMonth: fromMonth || undefined,
           toMonth: toMonth || undefined,
@@ -82,7 +125,7 @@ export function ImportModal(): React.JSX.Element {
         })
       } else {
         job = await api.import.lichess({
-          username: username.trim(),
+          username: name,
           max: maxGames,
           perfTypes: timeClasses.filter((t) => t !== 'daily'),
           analyzeAfterImport: analyzeAfter
@@ -96,6 +139,7 @@ export function ImportModal(): React.JSX.Element {
       const detected = await api.import.detect(urlText)
       switch (detected.kind) {
         case 'chesscom-user': {
+          await saveUsernameIfNeeded('chesscom', detected.username as string)
           const job = await api.import.chesscom({
             username: detected.username as string,
             maxGames,
@@ -105,6 +149,7 @@ export function ImportModal(): React.JSX.Element {
           break
         }
         case 'lichess-user': {
+          await saveUsernameIfNeeded('lichess', detected.username as string)
           const job = await api.import.lichess({
             username: detected.username as string,
             max: maxGames,
@@ -163,10 +208,22 @@ export function ImportModal(): React.JSX.Element {
     setPgnPreview(preview.games)
   }
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && !busy) setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [busy, setOpen])
+
   return (
-    <div className="modal-backdrop" onClick={() => setOpen(false)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop">
+      <div className="modal">
         <h2>Import games</h2>
+        <label className="row" style={{ gap: 6, marginBottom: 10 }}>
+          <input type="checkbox" checked={analyzeAfter} onChange={(e) => setAnalyzeAfter(e.target.checked)} />
+          Analyze after import (requires a configured engine)
+        </label>
         <div className="tabs">
           <button className={tab === 'username' ? 'active' : ''} onClick={() => setTab('username')}>
             Username
@@ -278,13 +335,18 @@ export function ImportModal(): React.JSX.Element {
         )}
 
         <div className="col" style={{ marginTop: 14 }}>
-          <label className="row" style={{ gap: 6 }}>
-            <input type="checkbox" checked={analyzeAfter} onChange={(e) => setAnalyzeAfter(e.target.checked)} />
-            Analyze after import (requires a configured engine)
-          </label>
-
           {error && <div className="callout error">{error}</div>}
-          {directResult && <ResultSummary result={directResult} />}
+          {directResult && (
+            <ResultSummary
+              result={directResult}
+              alreadyQueued={analyzeAfter}
+              onAnalyze={() => void api.analysis.queue(directResult.createdGameIds)}
+              onViewGames={() => {
+                navigate({ name: 'games' })
+                setOpen(false)
+              }}
+            />
+          )}
           {watchedJob && watchedJob.status === 'running' && (
             <div>
               <div className="muted" style={{ marginBottom: 4 }}>
@@ -305,7 +367,17 @@ export function ImportModal(): React.JSX.Element {
               </button>
             </div>
           )}
-          {jobResult && <ResultSummary result={jobResult} />}
+          {jobResult && (
+            <ResultSummary
+              result={jobResult}
+              alreadyQueued={analyzeAfter}
+              onAnalyze={() => void api.analysis.queue(jobResult.createdGameIds)}
+              onViewGames={() => {
+                navigate({ name: 'games' })
+                setOpen(false)
+              }}
+            />
+          )}
           {watchedJob?.status === 'failed' && (
             <div className="callout error">{watchedJob.error?.message ?? 'Import failed.'}</div>
           )}

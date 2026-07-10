@@ -9,6 +9,7 @@ import { importChessCom } from './importers/chesscom'
 import { importLichess, importLichessGame } from './importers/lichess'
 import { importPgnText } from './importers/pgn'
 import { seedContent } from './lessons/store'
+import { backfillUserColors, backfillMissingAccuracy } from './identity'
 import type { ImportChessComArgs, ImportLichessArgs, ImportPgnArgs, ImportResult } from '@shared/types'
 import type { JobContext } from './jobs/queue'
 
@@ -114,6 +115,12 @@ app.whenReady().then(async () => {
     fs.mkdirSync(path.join(dataDir, dir), { recursive: true })
   }
   seedContent(resourcesDir())
+  try {
+    backfillUserColors()
+    backfillMissingAccuracy()
+  } catch (e) {
+    console.warn('Backfill failed on startup:', e)
+  }
   registerIpc()
   registerJobHandlers()
   recoverJobs()

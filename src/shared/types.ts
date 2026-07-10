@@ -28,6 +28,8 @@ export interface GameRecord {
   plyCount: number
   mistakeCount: number
   ongoing: boolean
+  accuracyWhite: number | null
+  accuracyBlack: number | null
 }
 
 export interface MoveRecord {
@@ -251,6 +253,8 @@ export interface RepertoireNodeRecord {
   dueAt: string | null
   intervalDays: number
   ease: number
+  openingName: string | null
+  lineName: string | null
 }
 
 // ---- Jobs ----
@@ -326,6 +330,8 @@ export interface TodayPlan {
   tasks: PlanTask[]
   weaknesses: Array<{ tag: string; count: number; evidence: string }>
   streakDays: number
+  /** YYYY-MM-DD dates within the last 28 days that had any training activity. */
+  activeDays: string[]
   dueExercises: number
   dueRepertoire: number
   unreviewedGames: number
@@ -369,9 +375,15 @@ export interface AppSettings {
   defaultProfileId: string | null
   boardTheme: BoardColorScheme
   pieceSet: PieceSet
+  soundEnabled: boolean
 }
 
 export interface AnalysisSummary {
   positions: PositionAnalysis[]
   mistakes: MistakeRecord[]
+}
+
+export interface BackfillResult {
+  updatedGames: number
+  reclassifiedGames: number
 }

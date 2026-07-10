@@ -17,7 +17,9 @@ function rowToNode(row: Record<string, unknown>): RepertoireNodeRecord {
     source: JSON.parse(row.source_json as string),
     dueAt: (row.due_at as string) ?? null,
     intervalDays: row.interval_days as number,
-    ease: row.ease as number
+    ease: row.ease as number,
+    openingName: (row.opening_name as string) ?? null,
+    lineName: (row.line_name as string) ?? null
   }
 }
 
@@ -37,6 +39,8 @@ export interface AddNodeArgs {
   comment?: string
   source?: { type: string; gameId?: string }
   parentId?: string | null
+  openingName?: string | null
+  lineName?: string | null
 }
 
 /** Add a repertoire node; duplicate (color, fen, move) returns the existing node. */
@@ -56,8 +60,8 @@ export function addNode(args: AddNodeArgs): RepertoireNodeRecord {
 
   const id = uid('rep')
   db.prepare(
-    `INSERT INTO repertoire_nodes (id, color, parent_id, fen_before, move_uci, move_san, priority, status, comment, source_json, due_at, interval_days, ease)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO repertoire_nodes (id, color, parent_id, fen_before, move_uci, move_san, priority, status, comment, source_json, due_at, interval_days, ease, opening_name, line_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     id,
     args.color,
@@ -71,7 +75,9 @@ export function addNode(args: AddNodeArgs): RepertoireNodeRecord {
     JSON.stringify(args.source ?? { type: 'manual' }),
     now(),
     0,
-    2.5
+    2.5,
+    args.openingName ?? null,
+    args.lineName ?? null
   )
   broadcast({ type: 'repertoire:changed', payload: null })
   const row = db.prepare('SELECT * FROM repertoire_nodes WHERE id = ?').get(id) as Record<string, unknown>
@@ -81,11 +87,16 @@ export function addNode(args: AddNodeArgs): RepertoireNodeRecord {
 /** One-click "add line to repertoire" from game review: adds the user's moves up to a ply. */
 export function addLineFromGame(gameId: string, uptoPly: number): RepertoireNodeRecord[] {
   const db = getDb()
-  const game = db.prepare('SELECT user_color FROM games WHERE id = ?').get(gameId) as
-    | { user_color: string }
+  const game = db.prepare('SELECT user_color, opening_name, eco_code, white_name, black_name FROM games WHERE id = ?').get(
+    gameId
+  ) as
+    | { user_color: string; opening_name: string | null; eco_code: string | null; white_name: string | null; black_name: string | null }
     | undefined
   if (!game) throw new Error('Game not found')
   const color = (game.user_color === 'unknown' ? 'white' : game.user_color) as 'white' | 'black'
+  const openingName = game.opening_name ?? game.eco_code ?? 'From a game'
+  const opponent = color === 'white' ? game.black_name : game.white_name
+  const lineName = opponent ? `vs ${opponent}` : null
 
   const moves = db
     .prepare('SELECT ply, color, uci, fen_before FROM moves WHERE game_id = ? AND ply <= ? ORDER BY ply')
@@ -99,7 +110,9 @@ export function addLineFromGame(gameId: string, uptoPly: number): RepertoireNode
       fenBefore: mv.fen_before,
       moveUci: mv.uci,
       parentId,
-      source: { type: 'game', gameId }
+      source: { type: 'game', gameId },
+      openingName,
+      lineName
     })
     parentId = node.id
     if (mv.color === color) created.push(node)
@@ -130,7 +143,9 @@ export function addOpeningLine(args: {
       moveUci: mv.from + mv.to + (mv.promotion ?? ''),
       parentId,
       comment: isUserMove && isLast && args.comment ? `${label}. ${args.comment}` : isUserMove ? label : undefined,
-      source: { type: 'library' }
+      source: { type: 'library' },
+      openingName: args.openingName,
+      lineName: args.lineName ?? null
     })
     parentId = node.id
     if (isUserMove) created.push(node)
@@ -198,7 +213,17 @@ export function setNodePriority(id: string, priority: RepertoireNodeRecord['prio
   broadcast({ type: 'repertoire:changed', payload: null })
 }
 
+/** Delete a node and its full subtree (every move that follows it in the line). */
 export function deleteNode(id: string): void {
-  getDb().prepare('DELETE FROM repertoire_nodes WHERE id = ? OR parent_id = ?').run(id, id)
+  const db = getDb()
+  const toDelete = [id]
+  for (let i = 0; i < toDelete.length; i++) {
+    const children = db.prepare('SELECT id FROM repertoire_nodes WHERE parent_id = ?').all(toDelete[i]) as Array<{
+      id: string
+    }>
+    for (const c of children) toDelete.push(c.id)
+  }
+  const placeholders = toDelete.map(() => '?').join(',')
+  db.prepare(`DELETE FROM repertoire_nodes WHERE id IN (${placeholders})`).run(...toDelete)
   broadcast({ type: 'repertoire:changed', payload: null })
 }

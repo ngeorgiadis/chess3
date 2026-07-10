@@ -21,6 +21,7 @@ import piecesStauntyRaw from 'cm-chessboard/assets/pieces/staunty.svg?raw'
 import markersRaw from 'cm-chessboard/assets/extensions/markers/markers.svg?raw'
 import arrowsRaw from 'cm-chessboard/assets/extensions/arrows/arrows.svg?raw'
 import { useStore, useEvalTarget } from '../store'
+import { playSound } from '../sound'
 import type { BoardColorScheme, MistakeSeverity, PieceSet } from '@shared/types'
 import type { MarkerType } from 'cm-chessboard'
 
@@ -314,6 +315,7 @@ export function Board({
                 const promo = result.piece.charAt(1)
                 const probe2 = new Chess(fenRef.current)
                 const mv2 = probe2.move({ from, to, promotion: promo })
+                playSound(probe2.inCheck() ? 'check' : mv2.captured ? 'capture' : 'move')
                 emitMove(mv2.from + mv2.to + promo, mv2.san)
               } else {
                 syncToProp()
@@ -321,6 +323,7 @@ export function Board({
             })
             return true
           }
+          playSound(probe.inCheck() ? 'check' : mv.captured ? 'capture' : 'move')
           emitMove(mv.from + mv.to, mv.san)
           return true
         }

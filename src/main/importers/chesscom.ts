@@ -113,7 +113,8 @@ export async function importChessCom(args: ImportChessComArgs, ctx: JobContext):
             blackRating: g.black?.rating ?? null,
             timeClass: g.time_class ?? null,
             endedAt: g.end_time ? new Date(g.end_time * 1000).toISOString() : null,
-            ongoing: false // archives only contain finished games
+            ongoing: false, // archives only contain finished games
+            knownUsername: username
           }
         })
         if (outcome.status === 'inserted') {

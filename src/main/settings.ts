@@ -12,7 +12,8 @@ const DEFAULTS: AppSettings = {
   aiConfig: { mode: 'manual', baseUrl: 'https://api.openai.com/v1', apiKey: '', model: '' },
   defaultProfileId: null,
   boardTheme: 'green',
-  pieceSet: 'standard'
+  pieceSet: 'standard',
+  soundEnabled: true
 }
 
 export function getSettings(): AppSettings {

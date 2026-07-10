@@ -180,6 +180,141 @@ function exerciseFromMistake(
   )
 }
 
+/**
+ * Rough ACPL (average centipawn loss, in cp) → accuracy % curve. Not chess.com's undisclosed
+ * exact formula, but a monotonic decay calibrated against typical reference points
+ * (ACPL 10 ≈ 95%, ACPL 50 ≈ 78%, ACPL 100 ≈ 61%, ACPL 300 ≈ 22%) rather than an arbitrary constant.
+ */
+function acplToAccuracy(acpl: number): number {
+  const raw = 100 * Math.exp(-acpl / 200)
+  return Math.max(0, Math.min(100, Math.round(raw * 10) / 10))
+}
+
+/** Approximate per-side accuracy (Lichess-style ACPL→accuracy curve) from stored analyses. */
+function computeAccuracy(
+  moves: MoveRow[],
+  analyses: PositionAnalysis[]
+): { white: number | null; black: number | null } {
+  const totals: Record<'white' | 'black', { loss: number; count: number }> = {
+    white: { loss: 0, count: 0 },
+    black: { loss: 0, count: 0 }
+  }
+  for (const move of moves) {
+    const before = analyses[move.ply - 1]
+    const after = analyses[move.ply]
+    const bestBefore = before?.multiPv[0]
+    if (!bestBefore) continue
+    // Clamp to a "completely winning/losing" ceiling before averaging — otherwise one
+    // mate-score swing near the end of a decisive game (a huge raw cp delta that isn't a
+    // meaningfully "worse" move once you're already dead lost/won) dominates the whole average.
+    const evalBefore = Math.max(-1000, Math.min(1000, scoreToCp(bestBefore.score)))
+    const afterBest = after?.multiPv[0]
+    const resultForMover = afterBest ? Math.max(-1000, Math.min(1000, -scoreToCp(afterBest.score))) : evalBefore
+    const loss = Math.min(1000, Math.max(0, evalBefore - resultForMover))
+    const side = move.color as 'white' | 'black'
+    totals[side].loss += loss
+    totals[side].count++
+  }
+  return {
+    white: totals.white.count > 0 ? acplToAccuracy(totals.white.loss / totals.white.count) : null,
+    black: totals.black.count > 0 ? acplToAccuracy(totals.black.loss / totals.black.count) : null
+  }
+}
+
+/**
+ * Classify mistakes for the user's moves (both sides when user color is unknown), regenerate
+ * their exercises, and store per-side accuracy. Shared by fresh analysis and by reclassification
+ * after a user-identity backfill (see identity.ts) — neither re-runs the engine.
+ */
+function classifyAndStoreMistakes(gameId: string, moves: MoveRow[], analyses: PositionAnalysis[]): void {
+  const db = getDb()
+  const game = db.prepare('SELECT user_color, white_name, black_name FROM games WHERE id = ?').get(gameId) as
+    | { user_color: string; white_name: string | null; black_name: string | null }
+    | undefined
+  if (!game) return
+
+  // Old exercises reference mistakes by id — drop them before the mistakes themselves.
+  db.prepare(
+    `DELETE FROM exercises WHERE origin_type = 'mistake' AND origin_id IN (SELECT id FROM mistakes WHERE game_id = ?)`
+  ).run(gameId)
+  db.prepare('DELETE FROM mistakes WHERE game_id = ?').run(gameId)
+
+  const userColor = game.user_color
+  const opponent = (userColor === 'black' ? game.white_name : game.black_name) as string
+
+  let exercisesCreated = 0
+  let biggestSkipped: { move: MoveRow; cls: Classified } | null = null
+  for (const move of moves) {
+    if (userColor !== 'unknown' && move.color !== userColor) continue
+    const before = analyses[move.ply - 1]
+    const after = analyses[move.ply]
+    if (!before || !after) continue
+    const lowOnTime = move.clock_ms !== null && move.clock_ms < 30_000
+    const cls = classify(move, before, after, lowOnTime)
+    if (!cls) continue
+
+    const mistakeId = uid('mis')
+    db.prepare(
+      `INSERT INTO mistakes (id, game_id, ply, severity, eval_loss_cp, theme_tags_json, human_summary, why_bad, better_move_san, better_move_uci, training_action, confidence, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      mistakeId,
+      gameId,
+      move.ply,
+      cls.severity,
+      cls.evalLossCp,
+      JSON.stringify(cls.themeTags),
+      cls.humanSummary,
+      cls.whyBad,
+      cls.bestLine.moveSan ?? null,
+      cls.bestLine.moveUci,
+      cls.trainingAction,
+      cls.confidence,
+      now()
+    )
+    logEvent('mistake.created', 'mistake', mistakeId, { gameId, severity: cls.severity })
+
+    if (cls.severity !== 'inaccuracy' && cls.confidence !== 'low') {
+      exerciseFromMistake(mistakeId, gameId, move, cls, opponent)
+      exercisesCreated++
+    } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
+      biggestSkipped = { move, cls }
+    }
+  }
+  // Release criterion: at least one exercise per analyzed game when any mistake exists
+  if (exercisesCreated === 0 && biggestSkipped) {
+    exerciseFromMistake(uid('mis'), gameId, biggestSkipped.move, biggestSkipped.cls, opponent)
+  }
+
+  const accuracy = computeAccuracy(moves, analyses)
+  db.prepare('UPDATE games SET accuracy_white = ?, accuracy_black = ? WHERE id = ?').run(
+    accuracy.white,
+    accuracy.black,
+    gameId
+  )
+}
+
+/**
+ * Re-run mistake classification + accuracy for an already-analyzed game using the engine
+ * evaluations already stored — no engine process involved. Used after user_color changes.
+ */
+export function reclassifyGame(gameId: string): void {
+  const db = getDb()
+  const moves = db
+    .prepare(
+      'SELECT ply, move_number, color, san, uci, fen_before, fen_after, clock_ms FROM moves WHERE game_id = ? ORDER BY ply'
+    )
+    .all(gameId) as unknown as MoveRow[]
+  if (moves.length === 0) return
+  const analysisRows = getAnalysisForGame(gameId)
+  if (analysisRows.length === 0) return
+  const analyses: PositionAnalysis[] = []
+  for (const a of analysisRows) analyses[a.ply] = a
+  classifyAndStoreMistakes(gameId, moves, analyses)
+  broadcast({ type: 'games:changed', payload: null })
+  broadcast({ type: 'exercises:changed', payload: null })
+}
+
 export async function analyzeGameJob(payload: unknown, ctx: JobContext): Promise<void> {
   const { gameId, profileId } = payload as { gameId: string; profileId: string }
   const db = getDb()
@@ -268,54 +403,7 @@ export async function analyzeGameJob(payload: unknown, ctx: JobContext): Promise
       return
     }
 
-    // Classify mistakes for the user's moves (both sides when user color is unknown)
-    db.prepare('DELETE FROM mistakes WHERE game_id = ?').run(gameId)
-    const userColor = game.user_color as string
-    const opponent = (userColor === 'black' ? game.white_name : game.black_name) as string
-
-    let exercisesCreated = 0
-    let biggestSkipped: { move: MoveRow; cls: Classified } | null = null
-    for (const move of moves) {
-      if (userColor !== 'unknown' && move.color !== userColor) continue
-      const before = analyses[move.ply - 1]
-      const after = analyses[move.ply]
-      if (!before || !after) continue
-      const lowOnTime = move.clock_ms !== null && move.clock_ms < 30_000
-      const cls = classify(move, before, after, lowOnTime)
-      if (!cls) continue
-
-      const mistakeId = uid('mis')
-      db.prepare(
-        `INSERT INTO mistakes (id, game_id, ply, severity, eval_loss_cp, theme_tags_json, human_summary, why_bad, better_move_san, better_move_uci, training_action, confidence, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).run(
-        mistakeId,
-        gameId,
-        move.ply,
-        cls.severity,
-        cls.evalLossCp,
-        JSON.stringify(cls.themeTags),
-        cls.humanSummary,
-        cls.whyBad,
-        cls.bestLine.moveSan ?? null,
-        cls.bestLine.moveUci,
-        cls.trainingAction,
-        cls.confidence,
-        now()
-      )
-      logEvent('mistake.created', 'mistake', mistakeId, { gameId, severity: cls.severity })
-
-      if (cls.severity !== 'inaccuracy' && cls.confidence !== 'low') {
-        exerciseFromMistake(mistakeId, gameId, move, cls, opponent)
-        exercisesCreated++
-      } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
-        biggestSkipped = { move, cls }
-      }
-    }
-    // Release criterion: at least one exercise per analyzed game when any mistake exists
-    if (exercisesCreated === 0 && biggestSkipped) {
-      exerciseFromMistake(uid('mis'), gameId, biggestSkipped.move, biggestSkipped.cls, opponent)
-    }
+    classifyAndStoreMistakes(gameId, moves, analyses)
 
     db.prepare('UPDATE games SET analysis_status = ? WHERE id = ?').run('done', gameId)
     logEvent('game.analyzed', 'game', gameId, { profileId })

@@ -2,6 +2,7 @@ import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import { getDb } from './db'
 import { getSettings, setSettings } from './settings'
+import { backfillUserColors } from './identity'
 import { listGames, getGame, getMoves, deleteGame, exportPgn } from './games'
 import { importPgnText, splitPgn } from './importers/pgn'
 import { detectSource } from './importers/detect'
@@ -92,6 +93,7 @@ export function registerIpc(): void {
   // ---- Settings ----
   handle('settings:get', () => getSettings())
   handle('settings:set', (patch: Partial<AppSettings>) => setSettings(patch))
+  handle('identity:backfill', () => backfillUserColors())
 
   // ---- Games ----
   handle('games:list', (filters: GameFilters) => listGames(filters ?? {}))

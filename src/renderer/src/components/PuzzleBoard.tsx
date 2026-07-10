@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Chess } from 'chess.js'
 import { Board } from './Board'
+import { playSound } from '../sound'
 import type { SolutionMove } from '@shared/types'
 
 export interface PuzzleBoardProps {
@@ -78,6 +79,7 @@ export function PuzzleBoard({
     if (uci === expected) {
       let next = applyMove(position, uci)
       let idx = solutionIdx + 1
+      playSound('move')
       // auto-play opponent reply if present
       if (idx < solution.length) {
         const reply = solution[idx].moveUci
@@ -96,6 +98,7 @@ export function PuzzleBoard({
     } else {
       setFailedOnce(true)
       setStatus('wrong')
+      playSound('wrong')
     }
   }
 

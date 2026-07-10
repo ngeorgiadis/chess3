@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
 import { Board } from '../components/Board'
-import type { GameRecord, MistakeRecord, MoveRecord, PositionAnalysis } from '@shared/types'
+import type { GameRecord, MistakeRecord, MistakeSeverity, MoveRecord, PositionAnalysis } from '@shared/types'
 
 const SEVERITY_LABEL: Record<string, string> = {
   blunder: 'Blunder',
@@ -12,7 +12,15 @@ const SEVERITY_LABEL: Record<string, string> = {
   'missed-draw': 'Missed draw'
 }
 
-/** White-perspective centipawns for the eval graph. */
+const SEVERITY_GLYPH: Record<MistakeSeverity, { glyph: string; cls: string }> = {
+  blunder: { glyph: '??', cls: 'sev-blunder' },
+  'missed-win': { glyph: '??', cls: 'sev-blunder' },
+  mistake: { glyph: '?', cls: 'sev-mistake' },
+  'missed-draw': { glyph: '?', cls: 'sev-mistake' },
+  inaccuracy: { glyph: '?!', cls: 'sev-inaccuracy' }
+}
+
+/** White-perspective centipawns for the eval graph / bars. */
 function whiteCp(a: PositionAnalysis): number {
   const best = a.multiPv[0]
   if (!best) return 0
@@ -21,25 +29,45 @@ function whiteCp(a: PositionAnalysis): number {
   return Math.max(-800, Math.min(800, cp))
 }
 
+/** 0..100 white win-share for a static eval bar, same squash curve as the sidebar live-eval bar. */
+function whitePct(a: PositionAnalysis | undefined): number {
+  if (!a) return 50
+  const cp = whiteCp(a)
+  return 50 + 50 * (2 / (1 + Math.exp(-cp / 400)) - 1)
+}
+
 function EvalGraph({
   analyses,
+  mistakes,
   currentPly,
   onSelect
 }: {
   analyses: PositionAnalysis[]
+  mistakes: MistakeRecord[]
   currentPly: number
   onSelect: (ply: number) => void
 }): React.JSX.Element {
   const width = 800
-  const height = 90
+  const height = 140
   const n = analyses.length
   if (n < 2) return <div className="muted">No evaluation data.</div>
-  const points = analyses.map((a, i) => {
-    const x = (i / (n - 1)) * width
-    const y = height / 2 - (whiteCp(a) / 800) * (height / 2 - 6)
-    return `${x.toFixed(1)},${y.toFixed(1)}`
-  })
-  const cursorX = (currentPly / (n - 1)) * width
+  const yOf = (a: PositionAnalysis): number => height / 2 - (whiteCp(a) / 800) * (height / 2 - 6)
+  const xOf = (i: number): number => (i / (n - 1)) * width
+  const points = analyses.map((a, i) => `${xOf(i).toFixed(1)},${yOf(a).toFixed(1)}`)
+  const areaPoints = [`0,${height / 2}`, ...points, `${width},${height / 2}`].join(' ')
+  const cursorX = xOf(currentPly)
+
+  const dots = mistakes
+    .map((m) => {
+      const idx = analyses.findIndex((a) => a.ply === m.ply)
+      if (idx < 0) return null
+      const sev = SEVERITY_GLYPH[m.severity]
+      const color =
+        sev.cls === 'sev-blunder' ? 'var(--danger)' : sev.cls === 'sev-mistake' ? 'var(--warn)' : 'var(--info)'
+      return { x: xOf(idx), y: yOf(analyses[idx]), color, m }
+    })
+    .filter((d): d is { x: number; y: number; color: string; m: MistakeRecord } => d !== null)
+
   return (
     <svg
       className="eval-graph"
@@ -53,9 +81,43 @@ function EvalGraph({
       style={{ cursor: 'pointer' }}
     >
       <line x1={0} y1={height / 2} x2={width} y2={height / 2} stroke="var(--border)" strokeWidth={1} />
+      <polygon points={areaPoints} fill="var(--info)" opacity={0.16} stroke="none" />
       <polyline points={points.join(' ')} fill="none" stroke="var(--info)" strokeWidth={2} />
+      {dots.map((d, i) => (
+        <circle key={i} cx={d.x} cy={d.y} r={4.5} fill={d.color} stroke="var(--bg-raised)" strokeWidth={1.5}>
+          <title>
+            Move {Math.ceil(d.m.ply / 2)} · {SEVERITY_LABEL[d.m.severity]}
+          </title>
+        </circle>
+      ))}
       <line x1={cursorX} y1={0} x2={cursorX} y2={height} stroke="var(--accent)" strokeWidth={2} />
     </svg>
+  )
+}
+
+function AccuracySummary({ game, mistakes }: { game: GameRecord; mistakes: MistakeRecord[] }): React.JSX.Element | null {
+  if (game.accuracyWhite == null && game.accuracyBlack == null) return null
+  const counts: Partial<Record<MistakeSeverity, number>> = {}
+  for (const m of mistakes) counts[m.severity] = (counts[m.severity] ?? 0) + 1
+  const summaryBits: string[] = []
+  if (counts.blunder || counts['missed-win']) summaryBits.push(`${(counts.blunder ?? 0) + (counts['missed-win'] ?? 0)} blunder(s)`)
+  if (counts.mistake || counts['missed-draw']) summaryBits.push(`${(counts.mistake ?? 0) + (counts['missed-draw'] ?? 0)} mistake(s)`)
+  if (counts.inaccuracy) summaryBits.push(`${counts.inaccuracy} inaccuracy(-ies)`)
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="accuracy-row">
+        <div>
+          <div className="accuracy-pill">{game.accuracyWhite != null ? game.accuracyWhite.toFixed(1) : '—'}</div>
+          <div className="muted">White accuracy</div>
+        </div>
+        <div>
+          <div className="accuracy-pill">{game.accuracyBlack != null ? game.accuracyBlack.toFixed(1) : '—'}</div>
+          <div className="muted">Black accuracy</div>
+        </div>
+        <div className="muted">{summaryBits.length > 0 ? summaryBits.join(' · ') : 'No flagged mistakes'}</div>
+      </div>
+    </div>
   )
 }
 
@@ -68,6 +130,9 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   const [currentPly, setCurrentPly] = useState(0)
   const [revealed, setRevealed] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [tryMode, setTryMode] = useState(false)
+  const [tryFeedback, setTryFeedback] = useState<string | null>(null)
+  const [autoplay, setAutoplay] = useState(false)
 
   useEffect(() => {
     void api.games.get(gameId).then(setGame)
@@ -89,7 +154,22 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
     return () => window.removeEventListener('keydown', handler)
   }, [moves.length])
 
-  useEffect(() => setRevealed(false), [currentPly])
+  useEffect(() => {
+    setRevealed(false)
+    setTryMode(false)
+    setTryFeedback(null)
+  }, [currentPly])
+
+  // autoplay
+  useEffect(() => {
+    if (!autoplay) return
+    if (currentPly >= moves.length) {
+      setAutoplay(false)
+      return
+    }
+    const t = setTimeout(() => setCurrentPly((p) => Math.min(moves.length, p + 1)), 900)
+    return () => clearTimeout(t)
+  }, [autoplay, currentPly, moves.length])
 
   const mistakeByPly = useMemo(() => new Map(mistakes.map((m) => [m.ply, m])), [mistakes])
   const analysisByPly = useMemo(() => new Map(analyses.map((a) => [a.ply, a])), [analyses])
@@ -130,6 +210,27 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
       ]
     : []
 
+  function jumpToMistake(direction: 1 | -1): void {
+    if (direction === 1) {
+      const next = mistakes.find((m) => m.ply > currentPly)
+      if (next) setCurrentPly(next.ply)
+    } else {
+      const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly)
+      if (prevMs) setCurrentPly(prevMs.ply)
+    }
+  }
+
+  function handleTryMove(uci: string, san: string): void {
+    if (!upcomingMistake) return
+    if (uci === upcomingMistake.betterMoveUci) {
+      setTryFeedback(`✓ Correct — ${san} was the engine's top choice.`)
+      setRevealed(true)
+      setTryMode(false)
+    } else {
+      setTryFeedback(`${san} isn't the engine's top choice. Try again, or reveal what happened.`)
+    }
+  }
+
   async function createExercise(m: MistakeRecord): Promise<void> {
     try {
       await api.exercises.fromMistake(m.id)
@@ -168,6 +269,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
           This game has no engine analysis yet. Queue it from the Games screen to see mistakes and coaching.
         </div>
       )}
+      {analyses.length > 0 && <AccuracySummary game={game} mistakes={mistakes} />}
       {notice && (
         <div className="callout" style={{ marginBottom: 12 }}>
           {notice}
@@ -181,14 +283,19 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
           <div className="move-list">
             {moves.map((m) => {
               const mk = mistakeByPly.get(m.ply)
+              const before = analysisByPly.get(m.ply - 1)
+              const isBest = !mk && before?.multiPv[0]?.moveUci === m.uci
+              const glyph = mk ? SEVERITY_GLYPH[mk.severity] : isBest ? { glyph: '✓', cls: 'sev-best' } : null
               return (
                 <span key={m.ply}>
                   {m.color === 'white' && <span className="num">{m.moveNumber}.</span>}
                   <span
                     className={`mv ${currentPly === m.ply ? 'current' : ''} ${mk ? mk.severity.replace('missed-win', 'blunder').replace('missed-draw', 'blunder') : ''}`}
                     onClick={() => setCurrentPly(m.ply)}
+                    title={mk ? SEVERITY_LABEL[mk.severity] : isBest ? 'Best move' : undefined}
                   >
                     {m.san}
+                    {glyph && <span className={`mv-glyph ${glyph.cls}`}>{glyph.glyph}</span>}
                   </span>
                 </span>
               )
@@ -198,26 +305,58 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
 
         {/* Board */}
         <div style={{ flex: '0 1 520px', minWidth: 320 }}>
-          <Board
-            fen={fen}
-            orientation={orientation}
-            lastMove={lastMove}
-            lastMoveSeverity={mistakeHere?.severity ?? null}
-            arrows={boardArrows}
-            maxWidth={520}
-          />
-          <div className="row" style={{ marginTop: 8, justifyContent: 'center' }}>
+          <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
+            <div
+              className="eval-bar-vert-outer"
+              style={{ height: 'min(52vh, 480px)' }}
+              title="Static eval from stored analysis (White ↔ Black)"
+            >
+              <div className="eval-bar-vert-white" style={{ height: `${whitePct(positionAnalysis)}%` }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Board
+                fen={fen}
+                orientation={orientation}
+                interactive={tryMode}
+                onMove={tryMode ? handleTryMove : undefined}
+                lastMove={lastMove}
+                lastMoveSeverity={mistakeHere?.severity ?? null}
+                arrows={boardArrows}
+                maxWidth={500}
+              />
+            </div>
+          </div>
+          <div className="row" style={{ marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button className="small" onClick={() => setCurrentPly(0)}>⏮</button>
             <button className="small" onClick={() => setCurrentPly(Math.max(0, currentPly - 1))}>◀</button>
+            <button
+              className="small"
+              title="Previous critical moment"
+              disabled={!mistakes.some((m) => m.ply < currentPly)}
+              onClick={() => jumpToMistake(-1)}
+            >
+              ⏴!
+            </button>
             <span className="muted" style={{ minWidth: 90, textAlign: 'center' }}>
-              ply {currentPly}/{moves.length}
+              Move {currentPly}/{moves.length}
             </span>
+            <button
+              className="small"
+              title="Next critical moment"
+              disabled={!mistakes.some((m) => m.ply > currentPly)}
+              onClick={() => jumpToMistake(1)}
+            >
+              !⏵
+            </button>
             <button className="small" onClick={() => setCurrentPly(Math.min(moves.length, currentPly + 1))}>▶</button>
             <button className="small" onClick={() => setCurrentPly(moves.length)}>⏭</button>
+            <button className={`small ${autoplay ? 'primary' : ''}`} onClick={() => setAutoplay((a) => !a)}>
+              {autoplay ? '⏸ Pause' : '▶ Autoplay'}
+            </button>
           </div>
           {analyses.length > 1 && (
             <div style={{ marginTop: 8 }}>
-              <EvalGraph analyses={analyses} currentPly={currentPly} onSelect={setCurrentPly} />
+              <EvalGraph analyses={analyses} mistakes={mistakes} currentPly={currentPly} onSelect={setCurrentPly} />
             </div>
           )}
         </div>
@@ -231,9 +370,19 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                 {upcomingMistake.severity === 'blunder' ? 'This was the critical mistake in your game.' : 'You went wrong on the next move.'}{' '}
                 Before revealing: find your candidate moves. What is forcing? What changed after the last move?
               </p>
-              <button className="primary" onClick={() => setRevealed(true)}>
-                Compare with what happened
-              </button>
+              {tryFeedback && (
+                <div className={`callout ${tryFeedback.startsWith('✓') ? 'success' : 'warn'}`} style={{ marginBottom: 8 }}>
+                  {tryFeedback}
+                </div>
+              )}
+              <div className="row" style={{ flexWrap: 'wrap' }}>
+                {!tryMode && (
+                  <button className="primary" onClick={() => setTryMode(true)}>
+                    Try it on the board
+                  </button>
+                )}
+                <button onClick={() => setRevealed(true)}>Compare with what happened</button>
+              </div>
             </div>
           )}
 
