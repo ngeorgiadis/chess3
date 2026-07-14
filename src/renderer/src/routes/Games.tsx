@@ -50,11 +50,11 @@ function accuracyCell(g: GameRecord): React.JSX.Element {
   )
 }
 
-export function Games(): React.JSX.Element {
+export function Games({ initialText }: { initialText?: string }): React.JSX.Element {
   const navigate = useStore((s) => s.navigate)
   const setImportModalOpen = useStore((s) => s.setImportModalOpen)
   const [games, setGames] = useState<GameRecord[]>([])
-  const [filters, setFilters] = useState<GameFilters>({})
+  const [filters, setFilters] = useState<GameFilters>(initialText ? { text: initialText } : {})
   const [selected, setSelected] = useState<GameRecord | null>(null)
   const [previewFen, setPreviewFen] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)

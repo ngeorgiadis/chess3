@@ -6,6 +6,7 @@ import { ImportModal } from './components/ImportModal'
 import { Onboarding, ONBOARDING_DONE_KEY } from './components/Onboarding'
 import { Today } from './routes/Today'
 import { Games } from './routes/Games'
+import { Insights } from './routes/Insights'
 import { Review } from './routes/Review'
 import { Openings } from './routes/Openings'
 import { Lessons } from './routes/Lessons'
@@ -44,7 +45,10 @@ export function App(): React.JSX.Element {
       content = <Today />
       break
     case 'games':
-      content = <Games />
+      content = <Games initialText={route.ecoFilter} />
+      break
+    case 'insights':
+      content = <Insights />
       break
     case 'review':
       content = <Review gameId={route.gameId} />

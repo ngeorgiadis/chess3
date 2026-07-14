@@ -6,7 +6,8 @@ import type { AppEvent, AppSettings, JobRecord, LiveEvalUpdate } from '@shared/t
 
 export type Route =
   | { name: 'today' }
-  | { name: 'games' }
+  | { name: 'games'; ecoFilter?: string }
+  | { name: 'insights' }
   | { name: 'review'; gameId: string }
   | { name: 'openings' }
   | { name: 'lessons' }

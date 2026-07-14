@@ -7107,6 +7107,9 @@ const api = {
   plan: {
     today: () => raw["plan:today"]()
   },
+  stats: {
+    overview: () => raw["stats:overview"]()
+  },
   ai: {
     outline: (args) => raw["ai:outline"](args),
     generateLesson: (args) => raw["ai:generateLesson"](args)
@@ -7247,6 +7250,7 @@ function useEvalTarget(fen) {
 const NAV = [
   { route: { name: "today" }, label: "Today", icon: "☀" },
   { route: { name: "games" }, label: "Games", icon: "♟" },
+  { route: { name: "insights" }, label: "Insights", icon: "📈" },
   { route: { name: "openings" }, label: "Openings", icon: "⇶" },
   { route: { name: "lessons" }, label: "Lessons", icon: "📖" },
   { route: { name: "exercises" }, label: "Exercises", icon: "🧩" },
@@ -7894,9 +7898,22 @@ function StreakCalendar({ activeDays, streakDays }) {
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginTop: 4 }, children: streakDays > 0 ? `${streakDays} day streak — keep it going` : "Train today to start a streak" })
   ] });
 }
+function RatingSparkline({ points }) {
+  const recent = points.slice(-10);
+  if (recent.length < 2) return null;
+  const width = 100;
+  const height = 26;
+  const ratings = recent.map((p) => p.rating);
+  const min = Math.min(...ratings);
+  const max = Math.max(...ratings);
+  const span = max - min || 1;
+  const line = recent.map((p, i) => `${(i / (recent.length - 1) * (width - 4) + 2).toFixed(1)},${(height - 2 - (p.rating - min) / span * (height - 4)).toFixed(1)}`).join(" ");
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { viewBox: `0 0 ${width} ${height}`, width, height, style: { display: "block" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: line, fill: "none", stroke: "var(--accent)", strokeWidth: 1.5 }) });
+}
 function Today() {
   const [plan, setPlan] = reactExports.useState(null);
   const [storedTasks, setStoredTasks] = reactExports.useState([]);
+  const [ratingHistory, setRatingHistory] = reactExports.useState([]);
   const navigate = useStore((s) => s.navigate);
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
   const settings = useStore((s) => s.settings);
@@ -7905,9 +7922,11 @@ function Today() {
       setPlan(p);
       setStoredTasks(loadOrInitStoredTasks(p));
     });
+    void api.stats.overview().then((s) => setRatingHistory(s.ratingHistory));
   }, []);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["games:changed", "exercises:changed", "repertoire:changed", "lessons:changed", "job:completed"], refresh);
+  const latestRating = ratingHistory.length > 0 ? ratingHistory[ratingHistory.length - 1].rating : null;
   function openTask(task) {
     switch (task.kind) {
       case "import":
@@ -7983,13 +8002,16 @@ function Today() {
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "stat-big", children: plan.streakDays }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "day streak" })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "stat-big", children: [
-              settings?.ratingCurrent ?? 1500,
-              "→",
-              settings?.ratingGoal ?? 1800
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row clickable", style: { cursor: "pointer", gap: 10 }, onClick: () => navigate({ name: "insights" }), children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "stat-big", children: [
+                latestRating ?? settings?.ratingCurrent ?? 1500,
+                "→",
+                settings?.ratingGoal ?? 1800
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: latestRating != null ? "rating (latest game) → goal" : "rating goal" })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "rating goal" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx(RatingSparkline, { points: ratingHistory })
           ] })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(StreakCalendar, { activeDays: plan.activeDays, streakDays: plan.streakDays }) }),
@@ -14285,11 +14307,11 @@ function accuracyCell(g) {
     g.accuracyBlack != null ? `${g.accuracyBlack.toFixed(0)}%` : "—"
   ] });
 }
-function Games() {
+function Games({ initialText }) {
   const navigate = useStore((s) => s.navigate);
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
   const [games, setGames] = reactExports.useState([]);
-  const [filters, setFilters] = reactExports.useState({});
+  const [filters, setFilters] = reactExports.useState(initialText ? { text: initialText } : {});
   const [selected, setSelected] = reactExports.useState(null);
   const [previewFen, setPreviewFen] = reactExports.useState(null);
   const [error, setError] = reactExports.useState(null);
@@ -14535,6 +14557,210 @@ function Games() {
             )
           ] })
         ] })
+      ] })
+    ] })
+  ] });
+}
+const TIME_CLASS_LABEL = {
+  bullet: "Bullet",
+  blitz: "Blitz",
+  rapid: "Rapid",
+  classical: "Classical",
+  daily: "Daily",
+  unknown: "Other"
+};
+function LineChart({
+  points,
+  yOf,
+  height = 130,
+  color = "var(--info)"
+}) {
+  const width = 800;
+  if (points.length < 2) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { padding: "20px 0" }, children: "Not enough data yet." });
+  }
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const xSpan = maxX - minX || 1;
+  const ySpan = maxY - minY || 1;
+  const px = (x) => (x - minX) / xSpan * (width - 12) + 6;
+  const py = (y) => height - 10 - (y - minY) / ySpan * (height - 20);
+  const line = points.map((p) => `${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(" ");
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { className: "eval-graph", viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none", style: { height }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: line, fill: "none", stroke: color, strokeWidth: 2 }),
+    points.map((p, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: px(p.x), cy: py(p.y), r: 2.5, fill: color, children: /* @__PURE__ */ jsxRuntimeExports.jsx("title", { children: p.title }) }, i))
+  ] });
+}
+function ResultsBar({ split }) {
+  const total = split.wins + split.losses + split.draws;
+  if (total === 0) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No results yet." });
+  const w = split.wins / total * 100;
+  const d = split.draws / total * 100;
+  const l = split.losses / total * 100;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        className: "row",
+        style: { height: 14, borderRadius: 7, overflow: "hidden", border: "1px solid var(--border)", gap: 0, alignItems: "stretch" },
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${w}%`, height: "100%", background: "var(--accent)" }, title: `${split.wins} wins` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${d}%`, height: "100%", background: "var(--warn)" }, title: `${split.draws} draws` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${l}%`, height: "100%", background: "var(--danger)" }, title: `${split.losses} losses` })
+        ]
+      }
+    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginTop: 6, fontSize: 12 }, children: [
+      split.wins,
+      "W · ",
+      split.draws,
+      "D · ",
+      split.losses,
+      "L · ",
+      (split.wins / total * 100).toFixed(0),
+      "% score"
+    ] })
+  ] });
+}
+function ratingPoint(p, i) {
+  return { x: i, y: p.rating, title: `${p.date} · ${p.rating}` };
+}
+function accuracyPoint(p, i) {
+  return { x: i, y: p.accuracy, title: `${p.date} · ${p.accuracy.toFixed(1)}%` };
+}
+function Insights() {
+  const navigate = useStore((s) => s.navigate);
+  const [stats, setStats] = reactExports.useState(null);
+  const [timeClassFilter, setTimeClassFilter] = reactExports.useState(null);
+  reactExports.useEffect(() => {
+    void api.stats.overview().then(setStats);
+  }, []);
+  const timeClasses = reactExports.useMemo(() => {
+    if (!stats) return [];
+    const s = /* @__PURE__ */ new Set();
+    for (const p of stats.ratingHistory) s.add(p.timeClass ?? "unknown");
+    return [...s];
+  }, [stats]);
+  const filteredRating = reactExports.useMemo(() => {
+    if (!stats) return [];
+    return timeClassFilter ? stats.ratingHistory.filter((p) => (p.timeClass ?? "unknown") === timeClassFilter) : stats.ratingHistory;
+  }, [stats, timeClassFilter]);
+  if (!stats) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
+  if (stats.gamesTotal === 0) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Insights" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Trends from your imported games — rating, accuracy, openings, and where your mistakes happen." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { textAlign: "center", padding: 40 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import games to see your trends here." }) })
+    ] });
+  }
+  const phase = stats.mistakesByPhase;
+  const phaseMax = Math.max(phase.opening, phase.middlegame, phase.endgame, 1);
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Insights" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Trends from your imported games — rating, accuracy, openings, and where your mistakes happen." }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "stretch", gap: 14, flexWrap: "wrap", marginBottom: 14 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 2, minWidth: 380 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Rating trend" }),
+          timeClasses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 4 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${timeClassFilter === null ? "primary" : ""}`, onClick: () => setTimeClassFilter(null), children: "All" }),
+            timeClasses.map((tc) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${timeClassFilter === tc ? "primary" : ""}`, onClick: () => setTimeClassFilter(tc), children: TIME_CLASS_LABEL[tc] ?? tc }, tc))
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(LineChart, { points: filteredRating.map(ratingPoint), yOf: (v) => v })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 260 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Results" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ResultsBar, { split: stats.resultsOverall }),
+        Object.keys(stats.resultsByTimeClass).length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 8, marginTop: 12 }, children: Object.entries(stats.resultsByTimeClass).map(([tc, split]) => {
+          const total = split.wins + split.losses + split.draws;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: TIME_CLASS_LABEL[tc] ?? tc }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+              split.wins,
+              "W ",
+              split.draws,
+              "D ",
+              split.losses,
+              "L (",
+              total,
+              " games)"
+            ] })
+          ] }, tc);
+        }) })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "stretch", gap: 14, flexWrap: "wrap", marginBottom: 14 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 2, minWidth: 380 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Accuracy trend" }),
+        stats.gamesAnalyzed === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Analyze games to see your accuracy trend." }) : /* @__PURE__ */ jsxRuntimeExports.jsx(LineChart, { points: stats.accuracyHistory.map(accuracyPoint), yOf: (v) => v, color: "var(--accent)" })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 260 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Mistakes by phase" }),
+        phase.opening + phase.middlegame + phase.endgame === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No classified mistakes yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 8 }, children: [
+          ["Opening", phase.opening],
+          ["Middlegame", phase.middlegame],
+          ["Endgame", phase.endgame]
+        ].map(([label, count]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", fontSize: 12.5, marginBottom: 2 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: label }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: count })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 8, borderRadius: 4, background: "var(--bg-panel)", overflow: "hidden" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${count / phaseMax * 100}%`, height: "100%", background: "var(--info)" } }) })
+        ] }, label)) })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Your openings" }),
+      stats.openings.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No openings recorded yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "As" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Games" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Score" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Avg accuracy" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Last played" })
+        ] }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: stats.openings.map((o) => {
+          const total = o.games;
+          const score = total > 0 ? (o.wins + o.draws * 0.5) / total * 100 : 0;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "tr",
+            {
+              className: "clickable",
+              onClick: () => navigate({ name: "games", ecoFilter: o.ecoCode }),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                  o.openingName ?? o.ecoCode,
+                  " ",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted mono", children: o.ecoCode })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.color }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.games }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
+                  score.toFixed(0),
+                  "% ",
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { fontSize: 11 }, children: [
+                    "(",
+                    o.wins,
+                    "W ",
+                    o.draws,
+                    "D ",
+                    o.losses,
+                    "L)"
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.avgAccuracy != null ? `${o.avgAccuracy.toFixed(1)}%` : "—" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.lastPlayed })
+              ]
+            },
+            `${o.ecoCode}-${o.color}`
+          );
+        }) })
       ] })
     ] })
   ] });
@@ -17121,7 +17347,10 @@ function App() {
       content = /* @__PURE__ */ jsxRuntimeExports.jsx(Today, {});
       break;
     case "games":
-      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Games, {});
+      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Games, { initialText: route.ecoFilter });
+      break;
+    case "insights":
+      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Insights, {});
       break;
     case "review":
       content = /* @__PURE__ */ jsxRuntimeExports.jsx(Review, { gameId: route.gameId });

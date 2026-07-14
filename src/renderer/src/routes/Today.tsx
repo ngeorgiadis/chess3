@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore, useAppEvent } from '../store'
-import type { TodayPlan, PlanTask } from '@shared/types'
+import type { TodayPlan, PlanTask, RatingPoint } from '@shared/types'
 
 const ACTION_LABELS: Record<string, string> = {
   tactics: 'Tactics',
@@ -78,9 +78,29 @@ function StreakCalendar({ activeDays, streakDays }: { activeDays: string[]; stre
   )
 }
 
+function RatingSparkline({ points }: { points: RatingPoint[] }): React.JSX.Element | null {
+  const recent = points.slice(-10)
+  if (recent.length < 2) return null
+  const width = 100
+  const height = 26
+  const ratings = recent.map((p) => p.rating)
+  const min = Math.min(...ratings)
+  const max = Math.max(...ratings)
+  const span = max - min || 1
+  const line = recent
+    .map((p, i) => `${((i / (recent.length - 1)) * (width - 4) + 2).toFixed(1)},${(height - 2 - ((p.rating - min) / span) * (height - 4)).toFixed(1)}`)
+    .join(' ')
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} style={{ display: 'block' }}>
+      <polyline points={line} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
+    </svg>
+  )
+}
+
 export function Today(): React.JSX.Element {
   const [plan, setPlan] = useState<TodayPlan | null>(null)
   const [storedTasks, setStoredTasks] = useState<StoredTask[]>([])
+  const [ratingHistory, setRatingHistory] = useState<RatingPoint[]>([])
   const navigate = useStore((s) => s.navigate)
   const setImportModalOpen = useStore((s) => s.setImportModalOpen)
   const settings = useStore((s) => s.settings)
@@ -90,9 +110,12 @@ export function Today(): React.JSX.Element {
       setPlan(p)
       setStoredTasks(loadOrInitStoredTasks(p))
     })
+    void api.stats.overview().then((s) => setRatingHistory(s.ratingHistory))
   }, [])
   useEffect(refresh, [refresh])
   useAppEvent(['games:changed', 'exercises:changed', 'repertoire:changed', 'lessons:changed', 'job:completed'], refresh)
+
+  const latestRating = ratingHistory.length > 0 ? ratingHistory[ratingHistory.length - 1].rating : null
 
   function openTask(task: PlanTask): void {
     switch (task.kind) {
@@ -189,11 +212,14 @@ export function Today(): React.JSX.Element {
               <div className="stat-big">{plan.streakDays}</div>
               <div className="muted">day streak</div>
             </div>
-            <div>
-              <div className="stat-big">
-                {settings?.ratingCurrent ?? 1500}→{settings?.ratingGoal ?? 1800}
+            <div className="row clickable" style={{ cursor: 'pointer', gap: 10 }} onClick={() => navigate({ name: 'insights' })}>
+              <div>
+                <div className="stat-big">
+                  {latestRating ?? settings?.ratingCurrent ?? 1500}→{settings?.ratingGoal ?? 1800}
+                </div>
+                <div className="muted">{latestRating != null ? 'rating (latest game) → goal' : 'rating goal'}</div>
               </div>
-              <div className="muted">rating goal</div>
+              <RatingSparkline points={ratingHistory} />
             </div>
           </div>
           <div style={{ marginTop: 12 }}>

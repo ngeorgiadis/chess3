@@ -14,6 +14,7 @@ import type {
   PlayGameState,
   PlayMoveResult,
   PlayStartArgs,
+  StatsOverview,
   ImportChessComArgs,
   ImportLichessArgs,
   ImportPgnArgs,
@@ -131,6 +132,9 @@ export const api = {
   },
   plan: {
     today: () => raw['plan:today']() as Promise<TodayPlan>
+  },
+  stats: {
+    overview: () => raw['stats:overview']() as Promise<StatsOverview>
   },
   ai: {
     outline: (args: AiOutlineArgs) => raw['ai:outline'](args) as Promise<string>,

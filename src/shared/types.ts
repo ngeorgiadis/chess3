@@ -343,6 +343,49 @@ export interface PlayMoveResult {
   engineMove: PlayMoveEntry | null
 }
 
+// ---- Stats / Insights ----
+
+export interface RatingPoint {
+  date: string
+  rating: number
+  timeClass: string | null
+}
+
+export interface AccuracyPoint {
+  date: string
+  accuracy: number
+  gameId: string
+}
+
+export interface ResultsSplit {
+  wins: number
+  losses: number
+  draws: number
+}
+
+export interface OpeningStat {
+  ecoCode: string
+  openingName: string | null
+  color: 'white' | 'black'
+  games: number
+  wins: number
+  losses: number
+  draws: number
+  avgAccuracy: number | null
+  lastPlayed: string
+}
+
+export interface StatsOverview {
+  ratingHistory: RatingPoint[]
+  accuracyHistory: AccuracyPoint[]
+  resultsOverall: ResultsSplit
+  resultsByTimeClass: Record<string, ResultsSplit>
+  openings: OpeningStat[]
+  mistakesByPhase: { opening: number; middlegame: number; endgame: number }
+  gamesAnalyzed: number
+  gamesTotal: number
+}
+
 // ---- Study plan ----
 
 export interface PlanTask {

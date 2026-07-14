@@ -69,6 +69,7 @@ const CHANNELS = [
   'repertoire:setPriority',
   'repertoire:delete',
   'plan:today',
+  'stats:overview',
   'ai:outline',
   'ai:generateLesson'
 ] as const

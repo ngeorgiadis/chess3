@@ -33,6 +33,7 @@ import {
 import { liveEval } from './engines/live-eval'
 import { playVsEngine } from './engines/play'
 import { computeTodayPlan } from './plan/study-plan'
+import { getStatsOverview } from './stats'
 import { generateOutline, generateLesson } from './ai/lesson-agent'
 import type {
   AppSettings,
@@ -223,6 +224,9 @@ export function registerIpc(): void {
 
   // ---- Study plan ----
   handle('plan:today', () => computeTodayPlan())
+
+  // ---- Stats ----
+  handle('stats:overview', () => getStatsOverview())
 
   // ---- AI ----
   handle('ai:outline', (args: AiOutlineArgs) => generateOutline(args))
