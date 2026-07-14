@@ -7061,6 +7061,12 @@ const api = {
     status: () => raw["eval:status"](),
     position: (fen) => raw["eval:position"](fen)
   },
+  play: {
+    start: (args) => raw["play:start"](args),
+    move: (uci) => raw["play:move"](uci),
+    stop: () => raw["play:stop"](),
+    status: () => raw["play:status"]()
+  },
   analysis: {
     queue: (gameIds, profileId) => raw["analysis:queue"]({ gameIds, profileId }),
     cancel: (jobId) => raw["analysis:cancel"](jobId),
@@ -14533,6 +14539,102 @@ function Games() {
     ] })
   ] });
 }
+const STRENGTH_PRESETS = [
+  { label: "Club (1200)", elo: 1200 },
+  { label: "Strong club (1600)", elo: 1600 },
+  { label: "Expert (2000)", elo: 2e3 },
+  { label: "Full strength", elo: void 0 }
+];
+function resultLabel(state, userColor) {
+  if (!state.result) return "Game over.";
+  if (state.result === "1/2-1/2") return `Draw by ${state.reason ?? "agreement"}.`;
+  const userWon = userColor === "white" && state.result === "1-0" || userColor === "black" && state.result === "0-1";
+  return userWon ? `You won by ${state.reason}.` : `The engine won by ${state.reason}.`;
+}
+function PlayOut({
+  fen,
+  userColor,
+  onExit
+}) {
+  const [state, setState] = reactExports.useState(null);
+  const [started, setStarted] = reactExports.useState(false);
+  const [starting, setStarting] = reactExports.useState(false);
+  const [thinking, setThinking] = reactExports.useState(false);
+  const [error, setError] = reactExports.useState(null);
+  const [elo, setElo] = reactExports.useState(1200);
+  const stoppedRef = reactExports.useRef(false);
+  reactExports.useEffect(() => {
+    stoppedRef.current = false;
+    return () => {
+      stoppedRef.current = true;
+      void api.play.stop();
+    };
+  }, []);
+  async function begin() {
+    setStarting(true);
+    setError(null);
+    try {
+      const res = await api.play.start({ fen, userColor, eloTarget: elo });
+      if (stoppedRef.current) return;
+      setState(res.state);
+      setStarted(true);
+      if (res.engineMove) playSound(res.engineMove.san.includes("x") ? "capture" : "move");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setStarting(false);
+    }
+  }
+  async function handleMove(uci) {
+    setThinking(true);
+    setError(null);
+    try {
+      const res = await api.play.move(uci);
+      if (stoppedRef.current) return;
+      setState(res.state);
+      if (res.engineMove) playSound(res.engineMove.san.includes("x") ? "capture" : "move");
+      if (res.state.over) playSound("complete");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setThinking(false);
+    }
+  }
+  const lastMoveEntry = state?.moves[state.moves.length - 1];
+  const lastMove = lastMoveEntry ? { from: lastMoveEntry.uci.slice(0, 2), to: lastMoveEntry.uci.slice(2, 4) } : null;
+  const isUsersTurn = state ? state.turn === (userColor === "white" ? "w" : "b") : false;
+  if (!started) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Play it out" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: "Play this position against the engine. Pick a strength, then make your move on the board." }),
+      error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginBottom: 8 }, children: error }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { flexWrap: "wrap", marginBottom: 10 }, children: STRENGTH_PRESETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${elo === p.elo ? "primary" : ""}`, onClick: () => setElo(p.elo), children: p.label }, p.label)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", disabled: starting, onClick: () => void begin(), children: starting ? "Starting…" : "Start game" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: onExit, children: "Cancel" })
+      ] })
+    ] });
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      Board,
+      {
+        fen: state?.fen ?? fen,
+        orientation: userColor,
+        interactive: !state?.over && !thinking,
+        onMove: (uci) => void handleMove(uci),
+        lastMove,
+        evalTarget: false,
+        maxWidth: 440
+      }
+    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 10, justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: state?.over ? resultLabel(state, userColor) : thinking ? "Engine is thinking…" : isUsersTurn ? "Your move." : "Waiting for the engine…" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: onExit, children: state?.over ? "Back to review" : "Exit" })
+    ] }),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginTop: 8 }, children: error })
+  ] });
+}
 function whiteCp(a) {
   const best = a.multiPv[0];
   if (!best) return 0;
@@ -14686,6 +14788,7 @@ function Review({ gameId }) {
   const [autoplay, setAutoplay] = reactExports.useState(false);
   const [previewRank, setPreviewRank] = reactExports.useState(null);
   const [previewIdx, setPreviewIdx] = reactExports.useState(0);
+  const [playFen, setPlayFen] = reactExports.useState(null);
   reactExports.useEffect(() => {
     void api.games.get(gameId).then(setGame);
     void api.games.moves(gameId).then(setMoves);
@@ -14765,6 +14868,10 @@ function Review({ gameId }) {
   function exitPreview() {
     setPreviewRank(null);
     setPreviewIdx(0);
+  }
+  function fenAtPly(ply) {
+    if (ply <= 0) return moves[0]?.fenBefore ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    return moves[ply - 1].fenAfter;
   }
   function jumpToMistake(direction) {
     if (direction === 1) {
@@ -14850,7 +14957,7 @@ function Review({ gameId }) {
           ] }, m.ply);
         }) })
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: "0 1 460px", minWidth: 300 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: "0 1 460px", minWidth: 300 }, children: playFen ? /* @__PURE__ */ jsxRuntimeExports.jsx(PlayOut, { fen: playFen, userColor: orientation, onExit: () => setPlayFen(null) }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 8 }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(
             "div",
@@ -14923,7 +15030,7 @@ function Review({ gameId }) {
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${autoplay ? "primary" : ""}`, onClick: () => setAutoplay((a) => !a), children: autoplay ? "⏸ Pause" : "▶ Autoplay" })
         ] }),
         analyses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 6 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(EvalGraph, { analyses, mistakes, currentPly, onSelect: setCurrentPly }) })
-      ] }),
+      ] }) }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 260 }, children: [
         upcomingMistake && !revealed && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Critical moment ahead" }),
@@ -14935,7 +15042,8 @@ function Review({ gameId }) {
           tryFeedback && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `callout ${tryFeedback.startsWith("✓") ? "success" : "warn"}`, style: { marginBottom: 8 }, children: tryFeedback }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
             !tryMode && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setTryMode(true), children: "Try it on the board" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setRevealed(true), children: "Compare with what happened" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setRevealed(true), children: "Compare with what happened" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPlayFen(baseFen), children: "Play it out from here" })
           ] })
         ] }),
         mistakeHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
@@ -14961,7 +15069,8 @@ function Review({ gameId }) {
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => void createExercise(mistakeHere), children: "Create exercise" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(mistakeHere.ply - 1), children: "Go to position before" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(mistakeHere.ply - 1), children: "Go to position before" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setPlayFen(fenAtPly(mistakeHere.ply - 1)), children: "Play it out from here" })
           ] })
         ] }),
         (revealed || mistakeHere || !upcomingMistake) && bestHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [

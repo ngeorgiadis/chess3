@@ -3,6 +3,7 @@ import { Chess } from 'chess.js'
 import { api } from '../api'
 import { useStore } from '../store'
 import { Board } from '../components/Board'
+import { PlayOut } from '../components/PlayOut'
 import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
 import type { GameRecord, MistakeRecord, MoveRecord, PositionAnalysis, PvLine } from '@shared/types'
 
@@ -190,6 +191,8 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   /** Previewing an engine PV line: which multiPv rank, and how many of its moves are played. */
   const [previewRank, setPreviewRank] = useState<number | null>(null)
   const [previewIdx, setPreviewIdx] = useState(0)
+  /** Set to a fen to swap the board area for a playable game vs the engine from that position. */
+  const [playFen, setPlayFen] = useState<string | null>(null)
 
   useEffect(() => {
     void api.games.get(gameId).then(setGame)
@@ -301,6 +304,12 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
     setPreviewIdx(0)
   }
 
+  /** Board fen right before the given ply was played (ply is 1-indexed into `moves`). */
+  function fenAtPly(ply: number): string {
+    if (ply <= 0) return moves[0]?.fenBefore ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+    return moves[ply - 1].fenAfter
+  }
+
   function jumpToMistake(direction: 1 | -1): void {
     if (direction === 1) {
       const next = mistakes.find((m) => m.ply > currentPly)
@@ -396,75 +405,81 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
 
         {/* Board */}
         <div style={{ flex: '0 1 460px', minWidth: 300 }}>
-          <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
-            <div
-              className="eval-bar-vert-outer"
-              style={{ height: 'min(44vh, 400px)' }}
-              title="Static eval from stored analysis (White ↔ Black)"
-            >
-              <div className="eval-bar-vert-white" style={{ height: `${whitePct(positionAnalysis)}%` }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <Board
-                fen={fen}
-                orientation={orientation}
-                interactive={tryMode}
-                onMove={tryMode ? handleTryMove : undefined}
-                lastMove={lastMove}
-                lastMoveSeverity={previewing ? null : mistakeHere?.severity ?? null}
-                arrows={boardArrows}
-                maxWidth={440}
-              />
-            </div>
-          </div>
-          {previewing && (
-            <div className="row" style={{ marginTop: 6, justifyContent: 'center', gap: 6 }}>
-              <button className="small" disabled={previewIdx === 0} onClick={() => setPreviewIdx((i) => Math.max(0, i - 1))}>◀</button>
-              <span className="muted" style={{ fontSize: 11.5 }}>
-                Previewing line · step {previewIdx} of {previewSteps.length - 1}
-              </span>
-              <button
-                className="small"
-                disabled={previewIdx >= previewSteps.length - 1}
-                onClick={() => setPreviewIdx((i) => Math.min(previewSteps.length - 1, i + 1))}
-              >
-                ▶
-              </button>
-              <button className="small" onClick={exitPreview}>Exit preview</button>
-            </div>
-          )}
-          <div className="row" style={{ marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-            <button className="small" onClick={() => setCurrentPly(0)}>⏮</button>
-            <button className="small" onClick={() => setCurrentPly(Math.max(0, currentPly - 1))}>◀</button>
-            <button
-              className="small"
-              title="Previous critical moment"
-              disabled={!mistakes.some((m) => m.ply < currentPly)}
-              onClick={() => jumpToMistake(-1)}
-            >
-              ⏴!
-            </button>
-            <span className="muted" style={{ minWidth: 110, textAlign: 'center' }}>
-              {currentPly === 0 ? 'Start position' : `Move ${Math.ceil(currentPly / 2)} of ${Math.ceil(moves.length / 2)}`}
-            </span>
-            <button
-              className="small"
-              title="Next critical moment"
-              disabled={!mistakes.some((m) => m.ply > currentPly)}
-              onClick={() => jumpToMistake(1)}
-            >
-              !⏵
-            </button>
-            <button className="small" onClick={() => setCurrentPly(Math.min(moves.length, currentPly + 1))}>▶</button>
-            <button className="small" onClick={() => setCurrentPly(moves.length)}>⏭</button>
-            <button className={`small ${autoplay ? 'primary' : ''}`} onClick={() => setAutoplay((a) => !a)}>
-              {autoplay ? '⏸ Pause' : '▶ Autoplay'}
-            </button>
-          </div>
-          {analyses.length > 1 && (
-            <div style={{ marginTop: 6 }}>
-              <EvalGraph analyses={analyses} mistakes={mistakes} currentPly={currentPly} onSelect={setCurrentPly} />
-            </div>
+          {playFen ? (
+            <PlayOut fen={playFen} userColor={orientation} onExit={() => setPlayFen(null)} />
+          ) : (
+            <>
+              <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
+                <div
+                  className="eval-bar-vert-outer"
+                  style={{ height: 'min(44vh, 400px)' }}
+                  title="Static eval from stored analysis (White ↔ Black)"
+                >
+                  <div className="eval-bar-vert-white" style={{ height: `${whitePct(positionAnalysis)}%` }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Board
+                    fen={fen}
+                    orientation={orientation}
+                    interactive={tryMode}
+                    onMove={tryMode ? handleTryMove : undefined}
+                    lastMove={lastMove}
+                    lastMoveSeverity={previewing ? null : mistakeHere?.severity ?? null}
+                    arrows={boardArrows}
+                    maxWidth={440}
+                  />
+                </div>
+              </div>
+              {previewing && (
+                <div className="row" style={{ marginTop: 6, justifyContent: 'center', gap: 6 }}>
+                  <button className="small" disabled={previewIdx === 0} onClick={() => setPreviewIdx((i) => Math.max(0, i - 1))}>◀</button>
+                  <span className="muted" style={{ fontSize: 11.5 }}>
+                    Previewing line · step {previewIdx} of {previewSteps.length - 1}
+                  </span>
+                  <button
+                    className="small"
+                    disabled={previewIdx >= previewSteps.length - 1}
+                    onClick={() => setPreviewIdx((i) => Math.min(previewSteps.length - 1, i + 1))}
+                  >
+                    ▶
+                  </button>
+                  <button className="small" onClick={exitPreview}>Exit preview</button>
+                </div>
+              )}
+              <div className="row" style={{ marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                <button className="small" onClick={() => setCurrentPly(0)}>⏮</button>
+                <button className="small" onClick={() => setCurrentPly(Math.max(0, currentPly - 1))}>◀</button>
+                <button
+                  className="small"
+                  title="Previous critical moment"
+                  disabled={!mistakes.some((m) => m.ply < currentPly)}
+                  onClick={() => jumpToMistake(-1)}
+                >
+                  ⏴!
+                </button>
+                <span className="muted" style={{ minWidth: 110, textAlign: 'center' }}>
+                  {currentPly === 0 ? 'Start position' : `Move ${Math.ceil(currentPly / 2)} of ${Math.ceil(moves.length / 2)}`}
+                </span>
+                <button
+                  className="small"
+                  title="Next critical moment"
+                  disabled={!mistakes.some((m) => m.ply > currentPly)}
+                  onClick={() => jumpToMistake(1)}
+                >
+                  !⏵
+                </button>
+                <button className="small" onClick={() => setCurrentPly(Math.min(moves.length, currentPly + 1))}>▶</button>
+                <button className="small" onClick={() => setCurrentPly(moves.length)}>⏭</button>
+                <button className={`small ${autoplay ? 'primary' : ''}`} onClick={() => setAutoplay((a) => !a)}>
+                  {autoplay ? '⏸ Pause' : '▶ Autoplay'}
+                </button>
+              </div>
+              {analyses.length > 1 && (
+                <div style={{ marginTop: 6 }}>
+                  <EvalGraph analyses={analyses} mistakes={mistakes} currentPly={currentPly} onSelect={setCurrentPly} />
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -489,6 +504,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                   </button>
                 )}
                 <button onClick={() => setRevealed(true)}>Compare with what happened</button>
+                <button onClick={() => setPlayFen(baseFen)}>Play it out from here</button>
               </div>
             </div>
           )}
@@ -514,6 +530,9 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                 </button>
                 <button className="small" onClick={() => setCurrentPly(mistakeHere.ply - 1)}>
                   Go to position before
+                </button>
+                <button className="small" onClick={() => setPlayFen(fenAtPly(mistakeHere.ply - 1))}>
+                  Play it out from here
                 </button>
               </div>
             </div>

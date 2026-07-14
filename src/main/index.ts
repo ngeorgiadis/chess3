@@ -153,4 +153,5 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   void import('./engines/live-eval').then(({ liveEval }) => liveEval.shutdown())
+  void import('./engines/play').then(({ playVsEngine }) => playVsEngine.stop())
 })

@@ -4126,6 +4126,21 @@ function getProfile(id2) {
   const row = getDb().prepare("SELECT * FROM engine_profiles WHERE id = ?").get(id2);
   return row ? rowToProfile(row) : null;
 }
+function resolveDefaultEngineRecord() {
+  const settings = getSettings();
+  if (settings.defaultProfileId) {
+    const profile = getProfile(settings.defaultProfileId);
+    const eng = profile ? getEngine(profile.engineId) : null;
+    if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
+  }
+  for (const profile of listProfiles()) {
+    const eng = getEngine(profile.engineId);
+    if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
+  }
+  const first = listEngines().find((e) => e.status === "available");
+  if (first) return { executablePath: first.executablePath, name: first.name };
+  throw new Error("No UCI engine available. Add one on the Engines screen first.");
+}
 function saveProfile(profile) {
   const db2 = getDb();
   const id2 = profile.id || uid("prof");
@@ -12934,22 +12949,6 @@ class LiveEvaluator {
       error: null
     };
   }
-  /** Resolve the engine to use: default profile's engine, else first available engine. */
-  resolveEngineRecord() {
-    const settings = getSettings();
-    if (settings.defaultProfileId) {
-      const profile = getProfile(settings.defaultProfileId);
-      const eng = profile ? getEngine(profile.engineId) : null;
-      if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
-    }
-    for (const profile of listProfiles()) {
-      const eng = getEngine(profile.engineId);
-      if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
-    }
-    const first = listEngines().find((e) => e.status === "available");
-    if (first) return { executablePath: first.executablePath, name: first.name };
-    throw new Error("No UCI engine available. Add one on the Engines screen first.");
-  }
   async setEnabled(on) {
     if (!on) {
       this.enabled = false;
@@ -12957,7 +12956,7 @@ class LiveEvaluator {
       return this.status();
     }
     if (this.enabled && this.engine?.isRunning) return this.status();
-    const rec = this.resolveEngineRecord();
+    const rec = resolveDefaultEngineRecord();
     const engine = new UciEngine(rec.executablePath);
     engine.start();
     await engine.handshake();
@@ -13065,6 +13064,124 @@ const liveEval = new LiveEvaluator();
 const liveEval$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   liveEval
+}, Symbol.toStringTag, { value: "Module" }));
+const MOVETIME_MS = 700;
+const MIN_ELO = 800;
+const MAX_ELO = 2500;
+class PlayVsEngine {
+  engine = null;
+  chess = new Chess();
+  startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  userColor = "white";
+  engineName = null;
+  isEngineTurn() {
+    const toMoveColor = this.chess.turn() === "w" ? "white" : "black";
+    return toMoveColor !== this.userColor && !this.gameOver().over;
+  }
+  gameOver() {
+    if (this.chess.isCheckmate()) {
+      return { over: true, result: this.chess.turn() === "w" ? "0-1" : "1-0", reason: "checkmate" };
+    }
+    if (this.chess.isStalemate()) return { over: true, result: "1/2-1/2", reason: "stalemate" };
+    if (this.chess.isThreefoldRepetition()) return { over: true, result: "1/2-1/2", reason: "threefold repetition" };
+    if (this.chess.isInsufficientMaterial()) return { over: true, result: "1/2-1/2", reason: "insufficient material" };
+    if (this.chess.isDrawByFiftyMoves()) return { over: true, result: "1/2-1/2", reason: "50-move rule" };
+    if (this.chess.isDraw()) return { over: true, result: "1/2-1/2", reason: "draw" };
+    return { over: false, result: null, reason: null };
+  }
+  state() {
+    const over = this.gameOver();
+    return {
+      fen: this.chess.fen(),
+      turn: this.chess.turn(),
+      userColor: this.userColor,
+      moves: this.chess.history({ verbose: true }).map((m) => ({ uci: m.from + m.to + (m.promotion ?? ""), san: m.san })),
+      over: over.over,
+      result: over.result,
+      reason: over.reason,
+      engineName: this.engineName
+    };
+  }
+  /** Apply strength options if the engine supports them; falls back to full strength silently. */
+  applyStrength(engine, options, eloTarget) {
+    if (eloTarget == null) return;
+    const elo = Math.max(MIN_ELO, Math.min(MAX_ELO, Math.round(eloTarget)));
+    const limitStrength = options.find((o) => o.name === "UCI_LimitStrength");
+    const uciElo = options.find((o) => o.name === "UCI_Elo");
+    if (limitStrength && uciElo && uciElo.type === "spin") {
+      const min = uciElo.min ?? MIN_ELO;
+      const max = uciElo.max ?? MAX_ELO;
+      engine.setOption("UCI_LimitStrength", true);
+      engine.setOption("UCI_Elo", Math.max(min, Math.min(max, elo)));
+      return;
+    }
+    const skillLevel = options.find((o) => o.name === "Skill Level" && o.type === "spin");
+    if (skillLevel) {
+      const skill = Math.round((elo - MIN_ELO) / (MAX_ELO - MIN_ELO) * 20);
+      engine.setOption("Skill Level", Math.max(0, Math.min(20, skill)));
+    }
+  }
+  async engineReply() {
+    if (!this.engine?.isRunning) return null;
+    const uciMoves = this.chess.history({ verbose: true }).map((m) => m.from + m.to + (m.promotion ?? ""));
+    this.engine.send(`position fen ${this.startFen}${uciMoves.length ? " moves " + uciMoves.join(" ") : ""}`);
+    this.engine.send(`go movetime ${MOVETIME_MS}`);
+    const line = await this.engine.waitForLine((l) => l.startsWith("bestmove"), 15e3);
+    const uci = /^bestmove (\S+)/.exec(line)?.[1];
+    if (!uci || uci === "(none)") return null;
+    let mv;
+    try {
+      mv = this.chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || void 0 });
+    } catch {
+      throw new Error(`Engine returned an illegal move (${uci}) — try again or exit.`);
+    }
+    return { uci: mv.from + mv.to + (mv.promotion ?? ""), san: mv.san };
+  }
+  async start(fen, userColor, eloTarget) {
+    await this.stop();
+    this.chess = new Chess(fen);
+    this.startFen = fen;
+    this.userColor = userColor;
+    const rec = resolveDefaultEngineRecord();
+    const engine = new UciEngine(rec.executablePath);
+    engine.start();
+    const meta = await engine.handshake();
+    this.applyStrength(engine, meta.options, eloTarget);
+    await engine.newGame();
+    this.engine = engine;
+    this.engineName = rec.name;
+    let engineMove = null;
+    if (this.isEngineTurn()) engineMove = await this.engineReply();
+    return { state: this.state(), engineMove };
+  }
+  async userMove(uci) {
+    if (!this.engine?.isRunning) throw new Error("No game in progress. Start a new game first.");
+    if (this.isEngineTurn()) throw new Error("It's the engine's turn.");
+    if (this.gameOver().over) throw new Error("The game is already over.");
+    let mv;
+    try {
+      mv = this.chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || void 0 });
+    } catch {
+      throw new Error("Illegal move.");
+    }
+    let engineMove = null;
+    if (this.isEngineTurn()) engineMove = await this.engineReply();
+    return { state: this.state(), engineMove };
+  }
+  status() {
+    return this.engine?.isRunning ? this.state() : null;
+  }
+  async stop() {
+    const engine = this.engine;
+    this.engine = null;
+    this.engineName = null;
+    if (engine) await engine.quit();
+  }
+}
+const playVsEngine = new PlayVsEngine();
+const play = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  playVsEngine
 }, Symbol.toStringTag, { value: "Module" }));
 const ACTION_LABELS = {
   tactics: "Tactical awareness",
@@ -13455,6 +13572,13 @@ function registerIpc() {
   handle("eval:position", (fen) => {
     liveEval.evaluate(fen);
   });
+  handle("play:start", async (args) => {
+    await liveEval.setEnabled(false);
+    return playVsEngine.start(args.fen, args.userColor, args.eloTarget);
+  });
+  handle("play:move", (uci) => playVsEngine.userMove(uci));
+  handle("play:stop", () => playVsEngine.stop());
+  handle("play:status", () => playVsEngine.status());
   handle(
     "analysis:queue",
     (args) => queueAnalysis(args.gameIds, args.profileId)
@@ -13840,6 +13964,7 @@ electron.app.on("window-all-closed", () => {
 });
 electron.app.on("will-quit", () => {
   void Promise.resolve().then(() => liveEval$1).then(({ liveEval: liveEval2 }) => liveEval2.shutdown());
+  void Promise.resolve().then(() => play).then(({ playVsEngine: playVsEngine2 }) => playVsEngine2.stop());
 });
 exports.Chess = Chess;
 exports.addLineFromGame = addLineFromGame;

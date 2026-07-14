@@ -11,6 +11,9 @@ import type {
   GameFilters,
   GameRecord,
   LiveEvalStatus,
+  PlayGameState,
+  PlayMoveResult,
+  PlayStartArgs,
   ImportChessComArgs,
   ImportLichessArgs,
   ImportPgnArgs,
@@ -71,6 +74,12 @@ export const api = {
     setEnabled: (on: boolean) => raw['eval:setEnabled'](on) as Promise<LiveEvalStatus>,
     status: () => raw['eval:status']() as Promise<LiveEvalStatus>,
     position: (fen: string) => raw['eval:position'](fen) as Promise<void>
+  },
+  play: {
+    start: (args: PlayStartArgs) => raw['play:start'](args) as Promise<PlayMoveResult>,
+    move: (uci: string) => raw['play:move'](uci) as Promise<PlayMoveResult>,
+    stop: () => raw['play:stop']() as Promise<void>,
+    status: () => raw['play:status']() as Promise<PlayGameState | null>
   },
   analysis: {
     queue: (gameIds: string[], profileId?: string) =>

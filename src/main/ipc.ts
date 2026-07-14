@@ -31,6 +31,7 @@ import {
   deleteNode
 } from './repertoire'
 import { liveEval } from './engines/live-eval'
+import { playVsEngine } from './engines/play'
 import { computeTodayPlan } from './plan/study-plan'
 import { generateOutline, generateLesson } from './ai/lesson-agent'
 import type {
@@ -43,7 +44,8 @@ import type {
   LessonProgressRecord,
   AiOutlineArgs,
   AiGenerateArgs,
-  RepertoireNodeRecord
+  RepertoireNodeRecord,
+  PlayStartArgs
 } from '@shared/types'
 
 type Envelope = { ok: true; data: unknown } | { ok: false; error: { message: string; detail?: string } }
@@ -167,6 +169,16 @@ export function registerIpc(): void {
   handle('eval:position', (fen: string) => {
     liveEval.evaluate(fen)
   })
+
+  // ---- Play vs engine ----
+  handle('play:start', async (args: PlayStartArgs) => {
+    // avoid two engine processes fighting for CPU on the same machine
+    await liveEval.setEnabled(false)
+    return playVsEngine.start(args.fen, args.userColor, args.eloTarget)
+  })
+  handle('play:move', (uci: string) => playVsEngine.userMove(uci))
+  handle('play:stop', () => playVsEngine.stop())
+  handle('play:status', () => playVsEngine.status())
 
   // ---- Analysis ----
   handle('analysis:queue', (args: { gameIds: string[]; profileId?: string }) =>

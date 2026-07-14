@@ -313,6 +313,36 @@ export interface LiveEvalStatus {
   error: string | null
 }
 
+// ---- Play vs engine ----
+
+export interface PlayMoveEntry {
+  uci: string
+  san: string
+}
+
+export interface PlayGameState {
+  fen: string
+  turn: 'w' | 'b'
+  userColor: 'white' | 'black'
+  moves: PlayMoveEntry[]
+  over: boolean
+  result: '1-0' | '0-1' | '1/2-1/2' | null
+  reason: string | null
+  engineName: string | null
+}
+
+export interface PlayStartArgs {
+  fen: string
+  userColor: 'white' | 'black'
+  /** Target playing strength, roughly 800-2500 Elo; omitted plays at full engine strength. */
+  eloTarget?: number
+}
+
+export interface PlayMoveResult {
+  state: PlayGameState
+  engineMove: PlayMoveEntry | null
+}
+
 // ---- Study plan ----
 
 export interface PlanTask {
