@@ -41,11 +41,11 @@ function canAnalyze(g: GameRecord): boolean {
 
 function accuracyCell(g: GameRecord): React.JSX.Element {
   if (g.accuracyWhite == null && g.accuracyBlack == null) return <span className="muted">—</span>
-  if (g.userColor === 'white') return <span className="mono">{g.accuracyWhite?.toFixed(1) ?? '—'}</span>
-  if (g.userColor === 'black') return <span className="mono">{g.accuracyBlack?.toFixed(1) ?? '—'}</span>
+  if (g.userColor === 'white') return <span className="mono">{g.accuracyWhite != null ? `${g.accuracyWhite.toFixed(1)}%` : '—'}</span>
+  if (g.userColor === 'black') return <span className="mono">{g.accuracyBlack != null ? `${g.accuracyBlack.toFixed(1)}%` : '—'}</span>
   return (
     <span className="mono muted">
-      W {g.accuracyWhite?.toFixed(0) ?? '—'} / B {g.accuracyBlack?.toFixed(0) ?? '—'}
+      W {g.accuracyWhite != null ? `${g.accuracyWhite.toFixed(0)}%` : '—'} / B {g.accuracyBlack != null ? `${g.accuracyBlack.toFixed(0)}%` : '—'}
     </span>
   )
 }

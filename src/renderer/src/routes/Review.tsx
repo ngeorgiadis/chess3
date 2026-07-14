@@ -1,24 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Chess } from 'chess.js'
 import { api } from '../api'
 import { useStore } from '../store'
 import { Board } from '../components/Board'
-import type { GameRecord, MistakeRecord, MistakeSeverity, MoveRecord, PositionAnalysis } from '@shared/types'
-
-const SEVERITY_LABEL: Record<string, string> = {
-  blunder: 'Blunder',
-  mistake: 'Mistake',
-  inaccuracy: 'Inaccuracy',
-  'missed-win': 'Missed win',
-  'missed-draw': 'Missed draw'
-}
-
-const SEVERITY_GLYPH: Record<MistakeSeverity, { glyph: string; cls: string }> = {
-  blunder: { glyph: '??', cls: 'sev-blunder' },
-  'missed-win': { glyph: '??', cls: 'sev-blunder' },
-  mistake: { glyph: '?', cls: 'sev-mistake' },
-  'missed-draw': { glyph: '?', cls: 'sev-mistake' },
-  inaccuracy: { glyph: '?!', cls: 'sev-inaccuracy' }
-}
+import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
+import type { GameRecord, MistakeRecord, MoveRecord, PositionAnalysis, PvLine } from '@shared/types'
 
 /** White-perspective centipawns for the eval graph / bars. */
 function whiteCp(a: PositionAnalysis): number {
@@ -36,6 +22,48 @@ function whitePct(a: PositionAnalysis | undefined): number {
   return 50 + 50 * (2 / (1 + Math.exp(-cp / 400)) - 1)
 }
 
+/** White-perspective eval label for a whole position, e.g. "+1.86" or "#4". */
+function evalLabel(a: PositionAnalysis): string {
+  const best = a.multiPv[0]
+  if (!best) return '—'
+  if (best.score.type === 'mate') {
+    const m = a.sideToMove === 'w' ? best.score.value : -best.score.value
+    return `#${m}`
+  }
+  const cp = whiteCp(a)
+  return (cp >= 0 ? '+' : '') + (cp / 100).toFixed(2)
+}
+
+/** White-perspective eval label for one PV line at a given side-to-move. */
+function pvScoreLabel(pv: PvLine, sideToMove: 'w' | 'b'): string {
+  if (pv.score.type === 'mate') {
+    const m = sideToMove === 'w' ? pv.score.value : -pv.score.value
+    return `#${m}`
+  }
+  const cp = sideToMove === 'w' ? pv.score.value : -pv.score.value
+  return (cp >= 0 ? '+' : '') + (cp / 100).toFixed(2)
+}
+
+/** Move-numbered continuation text after the first (already-highlighted) PV move, e.g. "14…Nc6 15.Ne4 Na5". */
+function pvContinuationText(pv: PvLine, baseFen: string): string {
+  const sans = pv.pvSan && pv.pvSan.length ? pv.pvSan : pv.pvUci
+  const rest = sans.slice(1, 7)
+  if (rest.length === 0) return ''
+  const parts = baseFen.split(' ')
+  const baseSide = (parts[1] as 'w' | 'b') ?? 'w'
+  const baseFullmove = parseInt(parts[5] ?? '1', 10) || 1
+  let side: 'w' | 'b' = baseSide === 'w' ? 'b' : 'w'
+  let moveNum = baseSide === 'w' ? baseFullmove : baseFullmove + 1
+  const out: string[] = []
+  rest.forEach((san, i) => {
+    if (side === 'w') out.push(`${moveNum}.${san}`)
+    else out.push(i === 0 ? `${moveNum}…${san}` : san)
+    if (side === 'b') moveNum += 1
+    side = side === 'w' ? 'b' : 'w'
+  })
+  return out.join(' ')
+}
+
 function EvalGraph({
   analyses,
   mistakes,
@@ -50,6 +78,7 @@ function EvalGraph({
   const width = 800
   const height = 140
   const n = analyses.length
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
   if (n < 2) return <div className="muted">No evaluation data.</div>
   const yOf = (a: PositionAnalysis): number => height / 2 - (whiteCp(a) / 800) * (height / 2 - 6)
   const xOf = (i: number): number => (i / (n - 1)) * width
@@ -68,16 +97,23 @@ function EvalGraph({
     })
     .filter((d): d is { x: number; y: number; color: string; m: MistakeRecord } => d !== null)
 
+  const indexFromEvent = (e: React.MouseEvent<SVGSVGElement>): number => {
+    const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+    const frac = (e.clientX - rect.left) / rect.width
+    return Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1))))
+  }
+
+  const hover = hoverIdx != null ? analyses[hoverIdx] : null
+  const hoverLabelX = hover ? Math.min(Math.max(xOf(hoverIdx!) - 43, 2), width - 88) : 0
+
   return (
     <svg
       className="eval-graph"
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="none"
-      onClick={(e) => {
-        const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
-        const frac = (e.clientX - rect.left) / rect.width
-        onSelect(Math.round(frac * (n - 1)))
-      }}
+      onClick={(e) => onSelect(indexFromEvent(e))}
+      onMouseMove={(e) => setHoverIdx(indexFromEvent(e))}
+      onMouseLeave={() => setHoverIdx(null)}
       style={{ cursor: 'pointer' }}
     >
       <line x1={0} y1={height / 2} x2={width} y2={height / 2} stroke="var(--border)" strokeWidth={1} />
@@ -91,30 +127,48 @@ function EvalGraph({
         </circle>
       ))}
       <line x1={cursorX} y1={0} x2={cursorX} y2={height} stroke="var(--accent)" strokeWidth={2} />
+      {hover && hoverIdx != null && (
+        <g pointerEvents="none">
+          <line x1={xOf(hoverIdx)} y1={0} x2={xOf(hoverIdx)} y2={height} stroke="var(--text-faint)" strokeWidth={1} strokeDasharray="3,3" />
+          <g transform={`translate(${hoverLabelX}, 4)`}>
+            <rect width={86} height={16} rx={3} fill="var(--bg-panel)" stroke="var(--border)" />
+            <text x={6} y={11.5} fontSize={10} fill="var(--text)">
+              Move {Math.ceil(hover.ply / 2)} · {evalLabel(hover)}
+            </text>
+          </g>
+        </g>
+      )}
     </svg>
   )
 }
 
 function AccuracySummary({ game, mistakes }: { game: GameRecord; mistakes: MistakeRecord[] }): React.JSX.Element | null {
   if (game.accuracyWhite == null && game.accuracyBlack == null) return null
-  const counts: Partial<Record<MistakeSeverity, number>> = {}
+  const counts: Partial<Record<string, number>> = {}
   for (const m of mistakes) counts[m.severity] = (counts[m.severity] ?? 0) + 1
   const summaryBits: string[] = []
   if (counts.blunder || counts['missed-win']) summaryBits.push(`${(counts.blunder ?? 0) + (counts['missed-win'] ?? 0)} blunder(s)`)
   if (counts.mistake || counts['missed-draw']) summaryBits.push(`${(counts.mistake ?? 0) + (counts['missed-draw'] ?? 0)} mistake(s)`)
   if (counts.inaccuracy) summaryBits.push(`${counts.inaccuracy} inaccuracy(-ies)`)
 
+  const sides: Array<{ label: string; value: number | null; isUser: boolean }> = [
+    { label: game.whiteName ?? 'White', value: game.accuracyWhite, isUser: game.userColor === 'white' },
+    { label: game.blackName ?? 'Black', value: game.accuracyBlack, isUser: game.userColor === 'black' }
+  ]
+  sides.sort((a, b) => Number(b.isUser) - Number(a.isUser))
+
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <div className="accuracy-row">
-        <div>
-          <div className="accuracy-pill">{game.accuracyWhite != null ? game.accuracyWhite.toFixed(1) : '—'}</div>
-          <div className="muted">White accuracy</div>
-        </div>
-        <div>
-          <div className="accuracy-pill">{game.accuracyBlack != null ? game.accuracyBlack.toFixed(1) : '—'}</div>
-          <div className="muted">Black accuracy</div>
-        </div>
+        {sides.map((s) => (
+          <div key={s.label}>
+            <div className="accuracy-pill">{s.value != null ? `${s.value.toFixed(1)}%` : '—'}</div>
+            <div className="muted">
+              {s.label}
+              {s.isUser ? ' (you)' : ''}
+            </div>
+          </div>
+        ))}
         <div className="muted">{summaryBits.length > 0 ? summaryBits.join(' · ') : 'No flagged mistakes'}</div>
       </div>
     </div>
@@ -133,6 +187,9 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   const [tryMode, setTryMode] = useState(false)
   const [tryFeedback, setTryFeedback] = useState<string | null>(null)
   const [autoplay, setAutoplay] = useState(false)
+  /** Previewing an engine PV line: which multiPv rank, and how many of its moves are played. */
+  const [previewRank, setPreviewRank] = useState<number | null>(null)
+  const [previewIdx, setPreviewIdx] = useState(0)
 
   useEffect(() => {
     void api.games.get(gameId).then(setGame)
@@ -158,6 +215,8 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
     setRevealed(false)
     setTryMode(false)
     setTryFeedback(null)
+    setPreviewRank(null)
+    setPreviewIdx(0)
   }, [currentPly])
 
   // autoplay
@@ -176,11 +235,11 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
 
   if (!game) return <div className="muted">Loading…</div>
 
-  const fen =
+  const baseFen =
     currentPly === 0
       ? moves[0]?.fenBefore ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
       : moves[currentPly - 1].fenAfter
-  const lastMove =
+  const baseLastMove =
     currentPly > 0
       ? { from: moves[currentPly - 1].uci.slice(0, 2), to: moves[currentPly - 1].uci.slice(2, 4) }
       : null
@@ -193,22 +252,54 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   const positionAnalysis = analysisByPly.get(currentPly)
   const bestHere = positionAnalysis?.multiPv[0]
 
+  // Engine-line preview: step through a clicked PV from the current position
+  const previewPv = previewRank != null ? positionAnalysis?.multiPv.find((p) => p.rank === previewRank) : null
+  const previewSteps: Array<{ fen: string; lastMove: { from: string; to: string } | null }> = []
+  if (previewPv) {
+    const chess = new Chess(baseFen)
+    previewSteps.push({ fen: chess.fen(), lastMove: null })
+    for (const uci of previewPv.pvUci.slice(0, 8)) {
+      try {
+        const mv = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || undefined })
+        previewSteps.push({ fen: chess.fen(), lastMove: { from: mv.from, to: mv.to } })
+      } catch {
+        break
+      }
+    }
+  }
+  const previewing = previewSteps.length > 0
+  const previewStep = previewing ? previewSteps[Math.min(previewIdx, previewSteps.length - 1)] : null
+
+  const fen = previewStep ? previewStep.fen : baseFen
+  const lastMove = previewStep ? previewStep.lastMove : baseLastMove
+
   // After revealing a critical moment: compare the game move (red) with the better move (green)
   const playedNext = upcomingMistake && revealed ? moves[currentPly] : null
-  const boardArrows = playedNext
-    ? [
-        { from: playedNext.uci.slice(0, 2), to: playedNext.uci.slice(2, 4), color: 'red' },
-        ...(upcomingMistake!.betterMoveUci
-          ? [
-              {
-                from: upcomingMistake!.betterMoveUci.slice(0, 2),
-                to: upcomingMistake!.betterMoveUci.slice(2, 4),
-                color: 'green'
-              }
-            ]
-          : [])
-      ]
-    : []
+  const boardArrows =
+    !previewing && playedNext
+      ? [
+          { from: playedNext.uci.slice(0, 2), to: playedNext.uci.slice(2, 4), color: 'red' },
+          ...(upcomingMistake!.betterMoveUci
+            ? [
+                {
+                  from: upcomingMistake!.betterMoveUci.slice(0, 2),
+                  to: upcomingMistake!.betterMoveUci.slice(2, 4),
+                  color: 'green'
+                }
+              ]
+            : [])
+        ]
+      : []
+
+  function startPreview(rank: number, steps: number): void {
+    setPreviewRank(rank)
+    setPreviewIdx(steps)
+  }
+
+  function exitPreview(): void {
+    setPreviewRank(null)
+    setPreviewIdx(0)
+  }
 
   function jumpToMistake(direction: 1 | -1): void {
     if (direction === 1) {
@@ -278,7 +369,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
 
       <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
         {/* Move list */}
-        <div className="card" style={{ width: 230, flexShrink: 0, maxHeight: 560, overflowY: 'auto' }}>
+        <div className="card" style={{ width: 220, flexShrink: 0, maxHeight: 500, overflowY: 'auto' }}>
           <h3>Moves</h3>
           <div className="move-list">
             {moves.map((m) => {
@@ -304,11 +395,11 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
         </div>
 
         {/* Board */}
-        <div style={{ flex: '0 1 520px', minWidth: 320 }}>
+        <div style={{ flex: '0 1 460px', minWidth: 300 }}>
           <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
             <div
               className="eval-bar-vert-outer"
-              style={{ height: 'min(52vh, 480px)' }}
+              style={{ height: 'min(44vh, 400px)' }}
               title="Static eval from stored analysis (White ↔ Black)"
             >
               <div className="eval-bar-vert-white" style={{ height: `${whitePct(positionAnalysis)}%` }} />
@@ -320,12 +411,28 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                 interactive={tryMode}
                 onMove={tryMode ? handleTryMove : undefined}
                 lastMove={lastMove}
-                lastMoveSeverity={mistakeHere?.severity ?? null}
+                lastMoveSeverity={previewing ? null : mistakeHere?.severity ?? null}
                 arrows={boardArrows}
-                maxWidth={500}
+                maxWidth={440}
               />
             </div>
           </div>
+          {previewing && (
+            <div className="row" style={{ marginTop: 6, justifyContent: 'center', gap: 6 }}>
+              <button className="small" disabled={previewIdx === 0} onClick={() => setPreviewIdx((i) => Math.max(0, i - 1))}>◀</button>
+              <span className="muted" style={{ fontSize: 11.5 }}>
+                Previewing line · step {previewIdx} of {previewSteps.length - 1}
+              </span>
+              <button
+                className="small"
+                disabled={previewIdx >= previewSteps.length - 1}
+                onClick={() => setPreviewIdx((i) => Math.min(previewSteps.length - 1, i + 1))}
+              >
+                ▶
+              </button>
+              <button className="small" onClick={exitPreview}>Exit preview</button>
+            </div>
+          )}
           <div className="row" style={{ marginTop: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button className="small" onClick={() => setCurrentPly(0)}>⏮</button>
             <button className="small" onClick={() => setCurrentPly(Math.max(0, currentPly - 1))}>◀</button>
@@ -337,8 +444,8 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
             >
               ⏴!
             </button>
-            <span className="muted" style={{ minWidth: 90, textAlign: 'center' }}>
-              Move {currentPly}/{moves.length}
+            <span className="muted" style={{ minWidth: 110, textAlign: 'center' }}>
+              {currentPly === 0 ? 'Start position' : `Move ${Math.ceil(currentPly / 2)} of ${Math.ceil(moves.length / 2)}`}
             </span>
             <button
               className="small"
@@ -355,7 +462,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
             </button>
           </div>
           {analyses.length > 1 && (
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 6 }}>
               <EvalGraph analyses={analyses} mistakes={mistakes} currentPly={currentPly} onSelect={setCurrentPly} />
             </div>
           )}
@@ -416,12 +523,22 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
             <div className="card">
               <h3>What the engine saw</h3>
               {positionAnalysis!.multiPv.slice(0, 3).map((pv) => (
-                <div key={pv.rank} className="muted" style={{ marginBottom: 4 }}>
+                <div
+                  key={pv.rank}
+                  className="muted"
+                  style={{
+                    marginBottom: 4,
+                    cursor: 'pointer',
+                    borderRadius: 4,
+                    padding: '2px 4px',
+                    background: previewRank === pv.rank ? 'var(--bg-panel)' : undefined
+                  }}
+                  title="Click to preview this line on the board"
+                  onClick={() => startPreview(pv.rank, 1)}
+                >
                   <b className="mono">{pv.moveSan ?? pv.moveUci}</b>{' '}
-                  <span className="mono">
-                    {pv.score.type === 'mate' ? `#${pv.score.value}` : (pv.score.value / 100).toFixed(2)}
-                  </span>{' '}
-                  <span style={{ fontSize: 11 }}>{(pv.pvSan ?? pv.pvUci).slice(0, 6).join(' ')}</span>
+                  <span className="mono">{pvScoreLabel(pv, positionAnalysis!.sideToMove)}</span>{' '}
+                  <span style={{ fontSize: 11 }}>{pvContinuationText(pv, positionAnalysis!.fen)}</span>
                 </div>
               ))}
               <div className="muted" style={{ fontSize: 11 }}>

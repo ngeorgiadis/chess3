@@ -22,6 +22,7 @@ import markersRaw from 'cm-chessboard/assets/extensions/markers/markers.svg?raw'
 import arrowsRaw from 'cm-chessboard/assets/extensions/arrows/arrows.svg?raw'
 import { useStore, useEvalTarget } from '../store'
 import { playSound } from '../sound'
+import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
 import type { BoardColorScheme, MistakeSeverity, PieceSet } from '@shared/types'
 import type { MarkerType } from 'cm-chessboard'
 
@@ -120,6 +121,15 @@ export interface BoardProps {
 }
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+
+/** Top-right-corner percent position of a square, in board display space (accounts for orientation). */
+function squareBadgePosition(square: string, orientation: 'white' | 'black'): { left: string; top: string } {
+  const file = square.charCodeAt(0) - 97 // a=0..h=7
+  const rank = parseInt(square[1], 10) - 1 // 1=0..8=7
+  const col = orientation === 'white' ? file : 7 - file
+  const row = orientation === 'white' ? 7 - rank : rank
+  return { left: `${(col + 1) * 12.5}%`, top: `${row * 12.5}%` }
+}
 
 export function Board({
   fen,
@@ -353,6 +363,16 @@ export function Board({
       aria-label={`Chess board, ${chess.turn() === 'w' ? 'white' : 'black'} to move`}
     >
       <div ref={containerRef} className="cm-board-container" />
+      {lastMoveSeverity && lastMove && (
+        <span
+          className={`board-severity-badge ${SEVERITY_GLYPH[lastMoveSeverity].cls}`}
+          style={squareBadgePosition(lastMove.to, effOrientation)}
+          title={SEVERITY_LABEL[lastMoveSeverity]}
+          aria-hidden="true"
+        >
+          {SEVERITY_GLYPH[lastMoveSeverity].glyph}
+        </span>
+      )}
       {allowFlip && (
         <button
           type="button"
