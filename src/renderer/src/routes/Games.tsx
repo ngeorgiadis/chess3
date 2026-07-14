@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore, useAppEvent } from '../store'
 import { Board } from '../components/Board'
@@ -40,6 +40,45 @@ function canAnalyze(g: GameRecord): boolean {
   return !g.ongoing && (g.analysisStatus === 'none' || g.analysisStatus === 'failed')
 }
 
+type SortKey = 'date' | 'result' | 'mistakes' | 'accuracy'
+
+/** 2=win, 1=draw, 0=loss, -1=unknown — for sorting the Result column. */
+function outcomeRank(g: GameRecord): number {
+  if (!g.result) return -1
+  if (g.result === '1/2-1/2') return 1
+  if ((g.userColor === 'white' && g.result === '1-0') || (g.userColor === 'black' && g.result === '0-1')) return 2
+  if ((g.userColor === 'white' && g.result === '0-1') || (g.userColor === 'black' && g.result === '1-0')) return 0
+  return -1
+}
+
+function userAccuracy(g: GameRecord): number | null {
+  if (g.userColor === 'white') return g.accuracyWhite
+  if (g.userColor === 'black') return g.accuracyBlack
+  return null
+}
+
+const PAGE_SIZE = 200
+
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort
+}: {
+  label: string
+  sortKey: SortKey
+  sort: { key: SortKey; dir: 1 | -1 } | null
+  onSort: (key: SortKey) => void
+}): React.JSX.Element {
+  const active = sort?.key === sortKey
+  return (
+    <th className="clickable" style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => onSort(sortKey)}>
+      {label}
+      {active && <span style={{ marginLeft: 3 }}>{sort!.dir === 1 ? '▲' : '▼'}</span>}
+    </th>
+  )
+}
+
 function accuracyCell(g: GameRecord): React.JSX.Element {
   if (g.accuracyWhite == null && g.accuracyBlack == null) return <span className="muted">—</span>
   if (g.userColor === 'white') return <span className="mono">{g.accuracyWhite != null ? `${g.accuracyWhite.toFixed(1)}%` : '—'}</span>
@@ -56,18 +95,49 @@ export function Games({ initialText }: { initialText?: string }): React.JSX.Elem
   const setImportModalOpen = useStore((s) => s.setImportModalOpen)
   const [games, setGames] = useState<GameRecord[]>([])
   const [filters, setFilters] = useState<GameFilters>(initialText ? { text: initialText } : {})
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const [selected, setSelected] = useState<GameRecord | null>(null)
   const [previewFen, setPreviewFen] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null)
 
   const refresh = useCallback(() => {
-    void api.games.list(filters).then(setGames)
-  }, [filters])
+    void api.games.list({ ...filters, limit }).then(setGames)
+  }, [filters, limit])
   useEffect(refresh, [refresh])
   useAppEvent(['games:changed', 'job:completed'], refresh)
   useEffect(() => setChecked(new Set()), [filters])
+  useEffect(() => setLimit(PAGE_SIZE), [filters])
+
+  function toggleSort(key: SortKey): void {
+    setSort((prev) => (prev?.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: key === 'date' ? -1 : -1 }))
+  }
+
+  const sortedGames = useMemo(() => {
+    if (!sort) return games
+    const dir = sort.dir
+    const valueOf = (g: GameRecord): number | string => {
+      switch (sort.key) {
+        case 'date':
+          return g.endedAt ?? g.importedAt
+        case 'result':
+          return outcomeRank(g)
+        case 'mistakes':
+          return g.mistakeCount
+        case 'accuracy':
+          return userAccuracy(g) ?? -1
+      }
+    }
+    return [...games].sort((a, b) => {
+      const va = valueOf(a)
+      const vb = valueOf(b)
+      if (va < vb) return -1 * dir
+      if (va > vb) return 1 * dir
+      return 0
+    })
+  }, [games, sort])
 
   useEffect(() => {
     setPreviewFen(null)
@@ -201,20 +271,20 @@ export function Games({ initialText }: { initialText?: string }): React.JSX.Elem
               <thead>
                 <tr>
                   <th></th>
-                  <th>Date</th>
+                  <SortableHeader label="Date" sortKey="date" sort={sort} onSort={toggleSort} />
                   <th>White</th>
                   <th>Black</th>
-                  <th>Result</th>
+                  <SortableHeader label="Result" sortKey="result" sort={sort} onSort={toggleSort} />
                   <th>Speed</th>
                   <th>Opening</th>
-                  <th>Mistakes</th>
-                  <th>Accuracy</th>
+                  <SortableHeader label="Mistakes" sortKey="mistakes" sort={sort} onSort={toggleSort} />
+                  <SortableHeader label="Accuracy" sortKey="accuracy" sort={sort} onSort={toggleSort} />
                   <th>Analysis</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {games.map((g) => {
+                {sortedGames.map((g) => {
                   const st = STATUS_BADGE[g.analysisStatus] ?? STATUS_BADGE.none
                   return (
                     <tr
@@ -270,6 +340,13 @@ export function Games({ initialText }: { initialText?: string }): React.JSX.Elem
                 })}
               </tbody>
             </table>
+            {games.length >= limit && (
+              <div className="row" style={{ justifyContent: 'center', marginTop: 12 }}>
+                <button className="small" onClick={() => setLimit((l) => l + PAGE_SIZE)}>
+                  Show more
+                </button>
+              </div>
+            )}
           </div>
 
           {selected && (

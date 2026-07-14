@@ -16,6 +16,31 @@ import { AiStudio } from './routes/AiStudio'
 import { Engines } from './routes/Engines'
 import { Settings } from './routes/Settings'
 
+function SessionBanner(): React.JSX.Element | null {
+  const sessionQueue = useStore((s) => s.sessionQueue)
+  const sessionIndex = useStore((s) => s.sessionIndex)
+  const advanceSession = useStore((s) => s.advanceSession)
+  const endSession = useStore((s) => s.endSession)
+  if (sessionQueue.length === 0) return null
+  const task = sessionQueue[sessionIndex]
+  const isLast = sessionIndex >= sessionQueue.length - 1
+  return (
+    <div className="session-banner">
+      <span>
+        Task {sessionIndex + 1} of {sessionQueue.length} — <b>{task.title}</b>
+      </span>
+      <div className="row" style={{ gap: 6 }}>
+        <button className="small primary" onClick={advanceSession}>
+          {isLast ? 'Finish session' : 'Next →'}
+        </button>
+        <button className="small" onClick={endSession} title="End guided session">
+          ✕
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function App(): React.JSX.Element {
   const route = useStore((s) => s.route)
   const importModalOpen = useStore((s) => s.importModalOpen)
@@ -79,7 +104,10 @@ export function App(): React.JSX.Element {
   return (
     <div className="app-shell">
       <Sidebar />
-      <main className="main-content">{content}</main>
+      <div className="main-col">
+        <SessionBanner />
+        <main className="main-content">{content}</main>
+      </div>
       {importModalOpen && <ImportModal />}
       {onboardingOpen && <Onboarding />}
     </div>

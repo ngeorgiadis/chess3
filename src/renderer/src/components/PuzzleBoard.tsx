@@ -119,6 +119,13 @@ export function PuzzleBoard({
 
   const sideLabel = orientation === 'white' ? 'White' : 'Black'
 
+  // Keep the "you played X" spoiler out of the initial prompt — it gives away that a mistake
+  // happened here. Reveal it once the user has taken a hint or gotten it wrong.
+  const spoilerMatch = /^(.*?)\s*(\(you played [^)]+\))\.?\s*$/.exec(prompt ?? '')
+  const basePrompt = spoilerMatch ? spoilerMatch[1] : (prompt ?? `${sideLabel} to move. Find the best continuation.`)
+  const spoilerText = spoilerMatch ? spoilerMatch[2] : null
+  const spoilerRevealed = status !== 'solving' || hintsShown > 0
+
   return (
     <div className="row" style={{ alignItems: 'flex-start', gap: 18 }}>
       <div style={{ flex: `0 1 ${maxWidth}px`, minWidth: 300 }}>
@@ -132,7 +139,10 @@ export function PuzzleBoard({
         />
       </div>
       <div className="col" style={{ flex: 1, minWidth: 220 }}>
-        <div>{prompt ?? `${sideLabel} to move. Find the best continuation.`}</div>
+        <div>
+          {basePrompt}
+          {spoilerText && spoilerRevealed && <span className="muted"> {spoilerText}</span>}
+        </div>
         {status === 'wrong' && (
           <div className="callout warn">
             Not this one — that move loses the thread. Take another look at forcing moves.

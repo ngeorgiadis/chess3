@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore, useAppEvent } from '../store'
+import { openPlanTask } from '../taskNav'
 import type { TodayPlan, PlanTask, RatingPoint } from '@shared/types'
 
 const ACTION_LABELS: Record<string, string> = {
@@ -104,6 +105,7 @@ export function Today(): React.JSX.Element {
   const navigate = useStore((s) => s.navigate)
   const setImportModalOpen = useStore((s) => s.setImportModalOpen)
   const settings = useStore((s) => s.settings)
+  const startSession = useStore((s) => s.startSession)
 
   const refresh = useCallback(() => {
     void api.plan.today().then((p) => {
@@ -118,28 +120,7 @@ export function Today(): React.JSX.Element {
   const latestRating = ratingHistory.length > 0 ? ratingHistory[ratingHistory.length - 1].rating : null
 
   function openTask(task: PlanTask): void {
-    switch (task.kind) {
-      case 'import':
-        setImportModalOpen(true)
-        break
-      case 'setup-engine':
-        navigate({ name: 'engines' })
-        break
-      case 'exercises':
-        navigate({ name: 'exercises' })
-        break
-      case 'opening-review':
-        navigate({ name: 'openings' })
-        break
-      case 'game-review':
-        if (task.targetId) navigate({ name: 'review', gameId: task.targetId })
-        else navigate({ name: 'games' })
-        break
-      case 'lesson':
-        if (task.targetId) navigate({ name: 'lesson', lessonId: task.targetId })
-        else navigate({ name: 'lessons' })
-        break
-    }
+    openPlanTask(task, { navigate, setImportModalOpen })
   }
 
   if (!plan) return <div className="muted">Loading your plan…</div>
@@ -199,7 +180,7 @@ export function Today(): React.JSX.Element {
             ))}
           </div>
           {firstTask && (
-            <button className="primary" style={{ marginTop: 14 }} onClick={() => openTask(firstTask)}>
+            <button className="primary" style={{ marginTop: 14 }} onClick={() => startSession(plan.tasks)}>
               Start today's session
             </button>
           )}

@@ -162,7 +162,12 @@ function StepBody({
 }
 
 export function LessonView({ lesson, completedStepIds = [], onStepComplete, onFinished }: LessonViewProps): React.JSX.Element {
-  const [stepIdx, setStepIdx] = useState(0)
+  // Resume at the first incomplete step rather than always restarting from the top.
+  const [stepIdx, setStepIdx] = useState(() => {
+    const doneAtMount = new Set(completedStepIds)
+    const firstIncomplete = lesson.steps.findIndex((s) => !doneAtMount.has(s.id))
+    return firstIncomplete >= 0 ? firstIncomplete : 0
+  })
   const [exerciseMode, setExerciseMode] = useState(false)
   const [exerciseIdx, setExerciseIdx] = useState(0)
 

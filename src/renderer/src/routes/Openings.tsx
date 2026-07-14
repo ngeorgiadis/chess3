@@ -5,6 +5,7 @@ import { useAppEvent } from '../store'
 import { Board } from '../components/Board'
 import { OPENINGS, type Opening, type OpeningLine } from '@shared/openings'
 import { openingLabel } from '@shared/eco-names'
+import { formatDue } from '../format'
 import type { OpeningStat, RepertoireNodeRecord } from '@shared/types'
 
 /** Best OPENINGS-library match for an ECO code: exact code, else same A-letter+decade (e.g. C5x). */
@@ -569,7 +570,7 @@ export function Openings(): React.JSX.Element {
                             <span className="muted">—</span>
                           )}
                         </td>
-                        <td className="muted">{own && n.dueAt ? n.dueAt.slice(0, 10) : '—'}</td>
+                        <td className="muted">{own ? formatDue(n.dueAt) : '—'}</td>
                         <td>
                           <button
                             className="small danger"

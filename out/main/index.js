@@ -4221,7 +4221,12 @@ function classify(move, before, after, lowOnTime) {
     bestLine
   };
 }
-function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
+function gamePhase(ply, totalPlies) {
+  if (ply <= 20) return "opening";
+  if (totalPlies > 0 && ply >= totalPlies * 0.7) return "endgame";
+  return "middlegame";
+}
+function exerciseFromMistake(mistakeId, gameId, move, cls, opponent, totalPlies) {
   const db2 = getDb();
   const pv = cls.bestLine.pvUci.slice(0, 3);
   const { sans, legalCount } = uciLineToSan(move.fen_before, pv);
@@ -4229,7 +4234,7 @@ function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
   const moves = pv.slice(0, legalCount).map((u, i) => ({ moveUci: u, moveSan: sans[i] }));
   const type2 = cls.severity === "missed-win" ? "convert_win" : cls.severity === "missed-draw" ? "save_draw" : "best_move";
   const sideToMove = move.color;
-  const title2 = `From your game vs ${opponent || "opponent"}`;
+  const title2 = `Move ${move.move_number} vs ${opponent || "opponent"} · ${gamePhase(move.ply, totalPlies)}`;
   const prompt = cls.severity === "missed-draw" ? `${sideToMove === "white" ? "White" : "Black"} to move. You are worse — find the move that holds.` : `${sideToMove === "white" ? "White" : "Black"} to move. Find the strongest continuation (you played ${move.san} in the game).`;
   const hints = [];
   if (cls.themeTags.includes("mate-pattern")) hints.push("There is a forced mate. Start with checks.");
@@ -4255,7 +4260,7 @@ function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
     }),
     JSON.stringify(hints),
     cls.severity === "blunder" ? 2 : 3,
-    JSON.stringify([...cls.themeTags, cls.trainingAction]),
+    JSON.stringify([.../* @__PURE__ */ new Set([...cls.themeTags, cls.trainingAction])]),
     now(),
     now()
   );
@@ -4328,14 +4333,14 @@ function classifyAndStoreMistakes(gameId, moves, analyses) {
     );
     logEvent("mistake.created", "mistake", mistakeId, { gameId, severity: cls.severity });
     if (cls.severity !== "inaccuracy" && cls.confidence !== "low") {
-      exerciseFromMistake(mistakeId, gameId, move, cls, opponent);
+      exerciseFromMistake(mistakeId, gameId, move, cls, opponent, moves.length);
       exercisesCreated++;
     } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
       biggestSkipped = { move, cls };
     }
   }
   if (exercisesCreated === 0 && biggestSkipped) {
-    exerciseFromMistake(uid("mis"), gameId, biggestSkipped.move, biggestSkipped.cls, opponent);
+    exerciseFromMistake(uid("mis"), gameId, biggestSkipped.move, biggestSkipped.cls, opponent, moves.length);
   }
   const accuracy = computeAccuracy(moves, analyses);
   db2.prepare("UPDATE games SET accuracy_white = ?, accuracy_black = ? WHERE id = ?").run(
@@ -13569,11 +13574,11 @@ function computeTodayPlan() {
        FROM mistakes WHERE created_at >= ? GROUP BY training_action ORDER BY impact DESC LIMIT 5`
   ).all(since);
   const weaknesses = weaknessRows.map((w) => {
-    const pawns = Math.round(w.impact / 100);
+    const avgPawns = w.count > 0 ? w.impact / 100 / w.count : 0;
     return {
       tag: w.tag,
       count: w.count,
-      evidence: `${w.count} mistake${w.count === 1 ? "" : "s"} costing ~${pawns} pawn${pawns === 1 ? "" : "s"} in your recent games`
+      evidence: `${w.count} mistake${w.count === 1 ? "" : "s"} across your recent games, avg ${avgPawns.toFixed(1)} pawns each`
     };
   });
   if (gameCount === 0) {

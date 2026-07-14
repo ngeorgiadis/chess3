@@ -7173,6 +7173,27 @@ function playSound(kind) {
       break;
   }
 }
+function routeForTask(task) {
+  switch (task.kind) {
+    case "import":
+      return { openImport: true };
+    case "setup-engine":
+      return { name: "engines" };
+    case "exercises":
+      return { name: "exercises" };
+    case "opening-review":
+      return { name: "openings" };
+    case "game-review":
+      return task.targetId ? { name: "review", gameId: task.targetId } : { name: "games" };
+    case "lesson":
+      return task.targetId ? { name: "lesson", lessonId: task.targetId } : { name: "lessons" };
+  }
+}
+function openPlanTask(task, helpers) {
+  const dest = routeForTask(task);
+  if ("openImport" in dest) helpers.setImportModalOpen(true);
+  else helpers.navigate(dest);
+}
 const useStore = create((set, get) => ({
   route: { name: "today" },
   settings: null,
@@ -7183,6 +7204,8 @@ const useStore = create((set, get) => ({
   evalError: null,
   evalUpdate: null,
   evalFen: null,
+  sessionQueue: [],
+  sessionIndex: 0,
   navigate: (route) => set({ route }),
   setImportModalOpen: (open) => set({ importModalOpen: open }),
   setOnboardingOpen: (open) => set({ onboardingOpen: open }),
@@ -7206,7 +7229,22 @@ const useStore = create((set, get) => ({
     if (fen === get().evalFen) return;
     set({ evalFen: fen });
     if (get().evalEnabled) void api.eval.position(fen);
-  }
+  },
+  startSession: (tasks) => {
+    set({ sessionQueue: tasks, sessionIndex: 0 });
+    if (tasks[0]) openPlanTask(tasks[0], { navigate: get().navigate, setImportModalOpen: get().setImportModalOpen });
+  },
+  advanceSession: () => {
+    const { sessionQueue, sessionIndex } = get();
+    const nextIndex = sessionIndex + 1;
+    if (nextIndex >= sessionQueue.length) {
+      set({ sessionQueue: [], sessionIndex: 0 });
+      return;
+    }
+    set({ sessionIndex: nextIndex });
+    openPlanTask(sessionQueue[nextIndex], { navigate: get().navigate, setImportModalOpen: get().setImportModalOpen });
+  },
+  endSession: () => set({ sessionQueue: [], sessionIndex: 0 })
 }));
 let wired = false;
 function wireEvents() {
@@ -7917,6 +7955,7 @@ function Today() {
   const navigate = useStore((s) => s.navigate);
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
   const settings = useStore((s) => s.settings);
+  const startSession = useStore((s) => s.startSession);
   const refresh = reactExports.useCallback(() => {
     void api.plan.today().then((p) => {
       setPlan(p);
@@ -7928,28 +7967,7 @@ function Today() {
   useAppEvent(["games:changed", "exercises:changed", "repertoire:changed", "lessons:changed", "job:completed"], refresh);
   const latestRating = ratingHistory.length > 0 ? ratingHistory[ratingHistory.length - 1].rating : null;
   function openTask(task) {
-    switch (task.kind) {
-      case "import":
-        setImportModalOpen(true);
-        break;
-      case "setup-engine":
-        navigate({ name: "engines" });
-        break;
-      case "exercises":
-        navigate({ name: "exercises" });
-        break;
-      case "opening-review":
-        navigate({ name: "openings" });
-        break;
-      case "game-review":
-        if (task.targetId) navigate({ name: "review", gameId: task.targetId });
-        else navigate({ name: "games" });
-        break;
-      case "lesson":
-        if (task.targetId) navigate({ name: "lesson", lessonId: task.targetId });
-        else navigate({ name: "lessons" });
-        break;
-    }
+    openPlanTask(task, { navigate, setImportModalOpen });
   }
   if (!plan) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading your plan…" });
   const firstTask = plan.tasks[0];
@@ -7993,7 +8011,7 @@ function Today() {
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => openTask(task), children: "Open" })
           ] }, task.id))
         ] }),
-        firstTask && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", style: { marginTop: 14 }, onClick: () => openTask(firstTask), children: "Start today's session" })
+        firstTask && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", style: { marginTop: 14 }, onClick: () => startSession(plan.tasks), children: "Start today's session" })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 220 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Progress" }),
@@ -14605,6 +14623,31 @@ const STATUS_BADGE = {
 function canAnalyze(g) {
   return !g.ongoing && (g.analysisStatus === "none" || g.analysisStatus === "failed");
 }
+function outcomeRank(g) {
+  if (!g.result) return -1;
+  if (g.result === "1/2-1/2") return 1;
+  if (g.userColor === "white" && g.result === "1-0" || g.userColor === "black" && g.result === "0-1") return 2;
+  if (g.userColor === "white" && g.result === "0-1" || g.userColor === "black" && g.result === "1-0") return 0;
+  return -1;
+}
+function userAccuracy(g) {
+  if (g.userColor === "white") return g.accuracyWhite;
+  if (g.userColor === "black") return g.accuracyBlack;
+  return null;
+}
+const PAGE_SIZE = 200;
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort
+}) {
+  const active = sort?.key === sortKey;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("th", { className: "clickable", style: { cursor: "pointer", userSelect: "none" }, onClick: () => onSort(sortKey), children: [
+    label,
+    active && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginLeft: 3 }, children: sort.dir === 1 ? "▲" : "▼" })
+  ] });
+}
 function accuracyCell(g) {
   if (g.accuracyWhite == null && g.accuracyBlack == null) return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" });
   if (g.userColor === "white") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyWhite != null ? `${g.accuracyWhite.toFixed(1)}%` : "—" });
@@ -14621,17 +14664,46 @@ function Games({ initialText }) {
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
   const [games, setGames] = reactExports.useState([]);
   const [filters, setFilters] = reactExports.useState(initialText ? { text: initialText } : {});
+  const [limit, setLimit] = reactExports.useState(PAGE_SIZE);
   const [selected, setSelected] = reactExports.useState(null);
   const [previewFen, setPreviewFen] = reactExports.useState(null);
   const [error, setError] = reactExports.useState(null);
   const [checked, setChecked] = reactExports.useState(/* @__PURE__ */ new Set());
   const [bulkBusy, setBulkBusy] = reactExports.useState(false);
+  const [sort, setSort] = reactExports.useState(null);
   const refresh = reactExports.useCallback(() => {
-    void api.games.list(filters).then(setGames);
-  }, [filters]);
+    void api.games.list({ ...filters, limit }).then(setGames);
+  }, [filters, limit]);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["games:changed", "job:completed"], refresh);
   reactExports.useEffect(() => setChecked(/* @__PURE__ */ new Set()), [filters]);
+  reactExports.useEffect(() => setLimit(PAGE_SIZE), [filters]);
+  function toggleSort(key) {
+    setSort((prev) => prev?.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: key === "date" ? -1 : -1 });
+  }
+  const sortedGames = reactExports.useMemo(() => {
+    if (!sort) return games;
+    const dir = sort.dir;
+    const valueOf = (g) => {
+      switch (sort.key) {
+        case "date":
+          return g.endedAt ?? g.importedAt;
+        case "result":
+          return outcomeRank(g);
+        case "mistakes":
+          return g.mistakeCount;
+        case "accuracy":
+          return userAccuracy(g) ?? -1;
+      }
+    };
+    return [...games].sort((a, b) => {
+      const va = valueOf(a);
+      const vb = valueOf(b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+  }, [games, sort]);
   reactExports.useEffect(() => {
     setPreviewFen(null);
     if (!selected) return;
@@ -14756,85 +14828,88 @@ function Games({ initialText }) {
       /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import your games to build a personalized training plan." }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setImportModalOpen(true), children: "Import games" })
     ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Date" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "White" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Black" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Result" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Speed" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Mistakes" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Accuracy" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Analysis" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
-        ] }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: games.map((g) => {
-          const st = STATUS_BADGE[g.analysisStatus] ?? STATUS_BADGE.none;
-          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "tr",
-            {
-              className: `clickable ${selected?.id === g.id ? "selected" : ""}`,
-              onClick: () => setSelected(g),
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { onClick: (e) => e.stopPropagation(), children: canAnalyze(g) && /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: checked.has(g.id), onChange: () => toggleOne(g.id) }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: (g.endedAt ?? g.importedAt).slice(0, 10) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  g.whiteName ?? "?",
-                  " ",
-                  g.whiteRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-                    "(",
-                    g.whiteRating,
-                    ")"
-                  ] }) : null
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  g.blackName ?? "?",
-                  " ",
-                  g.blackRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-                    "(",
-                    g.blackRating,
-                    ")"
-                  ] }) : null
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: resultBadge(g) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.timeClass ?? "—" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", title: g.ecoCode ?? void 0, children: openingLabel(g) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: g.mistakeCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: g.mistakeCount }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: accuracyCell(g) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${st.cls}`, children: st.label }),
-                  g.ongoing && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge red", style: { marginLeft: 4 }, children: "ongoing" })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4 }, children: g.analysisStatus === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    className: "small primary",
-                    onClick: (e) => {
-                      e.stopPropagation();
-                      navigate({ name: "review", gameId: g.id });
-                    },
-                    children: "Review"
-                  }
-                ) : /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    className: "small",
-                    disabled: g.ongoing || g.analysisStatus === "queued" || g.analysisStatus === "running",
-                    onClick: (e) => {
-                      e.stopPropagation();
-                      void analyzeSelected(g);
-                    },
-                    children: "Analyze"
-                  }
-                ) }) })
-              ]
-            },
-            g.id
-          );
-        }) })
-      ] }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", {}),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Date", sortKey: "date", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "White" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Black" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Result", sortKey: "result", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Speed" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Mistakes", sortKey: "mistakes", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Accuracy", sortKey: "accuracy", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Analysis" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: sortedGames.map((g) => {
+            const st = STATUS_BADGE[g.analysisStatus] ?? STATUS_BADGE.none;
+            return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "tr",
+              {
+                className: `clickable ${selected?.id === g.id ? "selected" : ""}`,
+                onClick: () => setSelected(g),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { onClick: (e) => e.stopPropagation(), children: canAnalyze(g) && /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: checked.has(g.id), onChange: () => toggleOne(g.id) }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: (g.endedAt ?? g.importedAt).slice(0, 10) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                    g.whiteName ?? "?",
+                    " ",
+                    g.whiteRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                      "(",
+                      g.whiteRating,
+                      ")"
+                    ] }) : null
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                    g.blackName ?? "?",
+                    " ",
+                    g.blackRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                      "(",
+                      g.blackRating,
+                      ")"
+                    ] }) : null
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: resultBadge(g) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.timeClass ?? "—" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", title: g.ecoCode ?? void 0, children: openingLabel(g) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: g.mistakeCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: g.mistakeCount }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: accuracyCell(g) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${st.cls}`, children: st.label }),
+                    g.ongoing && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge red", style: { marginLeft: 4 }, children: "ongoing" })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4 }, children: g.analysisStatus === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      className: "small primary",
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        navigate({ name: "review", gameId: g.id });
+                      },
+                      children: "Review"
+                    }
+                  ) : /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      className: "small",
+                      disabled: g.ongoing || g.analysisStatus === "queued" || g.analysisStatus === "running",
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        void analyzeSelected(g);
+                      },
+                      children: "Analyze"
+                    }
+                  ) }) })
+                ]
+              },
+              g.id
+            );
+          }) })
+        ] }),
+        games.length >= limit && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "center", marginTop: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setLimit((l) => l + PAGE_SIZE), children: "Show more" }) })
+      ] }),
       selected && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
           selected.whiteName,
@@ -15681,6 +15756,19 @@ function Review({ gameId }) {
     ] })
   ] });
 }
+function formatDue(iso) {
+  if (!iso) return "—";
+  const day = iso.slice(0, 10);
+  const today = /* @__PURE__ */ new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const tomorrowStr = new Date(today.getTime() + 864e5).toISOString().slice(0, 10);
+  const yesterdayStr = new Date(today.getTime() - 864e5).toISOString().slice(0, 10);
+  if (day === todayStr) return "today";
+  if (day === tomorrowStr) return "tomorrow";
+  if (day === yesterdayStr) return "yesterday";
+  const d = /* @__PURE__ */ new Date(day + "T00:00:00");
+  return d.toLocaleDateString(void 0, { month: "short", day: "numeric" });
+}
 function matchLibraryOpening(ecoCode) {
   return OPENINGS.find((o) => o.eco === ecoCode) ?? OPENINGS.find((o) => o.eco[0] === ecoCode[0] && o.eco[1] === ecoCode[1]);
 }
@@ -16122,7 +16210,7 @@ function Openings() {
                         children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
                       }
                     ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: own && n.dueAt ? n.dueAt.slice(0, 10) : "—" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: own ? formatDue(n.dueAt) : "—" }),
                     /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
                       "button",
                       {
@@ -16192,24 +16280,38 @@ function Lessons() {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 16 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: cj.title }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: cj.summary }),
-        cj.modules.map((mod) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginBottom: 10 }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: mod.title }),
-          " ",
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-            "— ",
-            mod.summary
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 4, marginTop: 6 }, children: mod.lessonRefs.map((ref) => {
-            const lesson = lessonsById.get(ref);
-            return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: lesson ? "" : "muted", children: lesson ? lesson.title : `${ref} (not yet in library)` }),
-              lesson ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "row", style: { gap: 8 }, children: [
-                statusBadge(lesson.id),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => navigate({ name: "lesson", lessonId: lesson.id }), children: "Study" })
-              ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", children: "planned" })
-            ] }, ref);
-          }) })
-        ] }, mod.id))
+        cj.modules.map((mod) => {
+          const known = mod.lessonRefs.filter((ref) => lessonsById.has(ref));
+          const completed = known.filter((ref) => progress.get(ref)?.status === "completed");
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginBottom: 10 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: mod.title }),
+                " ",
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                  "— ",
+                  mod.summary
+                ] })
+              ] }),
+              known.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `badge ${completed.length === known.length ? "green" : ""}`, children: [
+                completed.length,
+                "/",
+                known.length,
+                " ✓"
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 4, marginTop: 6 }, children: mod.lessonRefs.map((ref) => {
+              const lesson = lessonsById.get(ref);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: lesson ? "" : "muted", children: lesson ? lesson.title : `${ref} (not yet in library)` }),
+                lesson ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "row", style: { gap: 8 }, children: [
+                  statusBadge(lesson.id),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => navigate({ name: "lesson", lessonId: lesson.id }), children: "Study" })
+                ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", children: "planned" })
+              ] }, ref);
+            }) })
+          ] }, mod.id);
+        })
       ] }, course.id);
     }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
@@ -16329,6 +16431,10 @@ function PuzzleBoard({
     finish();
   }
   const sideLabel = orientation === "white" ? "White" : "Black";
+  const spoilerMatch = /^(.*?)\s*(\(you played [^)]+\))\.?\s*$/.exec(prompt ?? "");
+  const basePrompt = spoilerMatch ? spoilerMatch[1] : prompt ?? `${sideLabel} to move. Find the best continuation.`;
+  const spoilerText = spoilerMatch ? spoilerMatch[2] : null;
+  const spoilerRevealed = status !== "solving" || hintsShown > 0;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 18 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: `0 1 ${maxWidth}px`, minWidth: 300 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
       Board,
@@ -16342,7 +16448,13 @@ function PuzzleBoard({
       }
     ) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 220 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: prompt ?? `${sideLabel} to move. Find the best continuation.` }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        basePrompt,
+        spoilerText && spoilerRevealed && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+          " ",
+          spoilerText
+        ] })
+      ] }),
       status === "wrong" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "callout warn", children: [
         "Not this one — that move loses the thread. Take another look at forcing moves.",
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 6 }, children: [
@@ -16501,7 +16613,11 @@ function StepBody({
   }
 }
 function LessonView({ lesson, completedStepIds = [], onStepComplete, onFinished }) {
-  const [stepIdx, setStepIdx] = reactExports.useState(0);
+  const [stepIdx, setStepIdx] = reactExports.useState(() => {
+    const doneAtMount = new Set(completedStepIds);
+    const firstIncomplete = lesson.steps.findIndex((s) => !doneAtMount.has(s.id));
+    return firstIncomplete >= 0 ? firstIncomplete : 0;
+  });
   const [exerciseMode, setExerciseMode] = reactExports.useState(false);
   const [exerciseIdx, setExerciseIdx] = reactExports.useState(0);
   const positions = reactExports.useMemo(() => new Map(lesson.positions.map((p) => [p.id, p])), [lesson]);
@@ -16595,13 +16711,27 @@ function LessonView({ lesson, completedStepIds = [], onStepComplete, onFinished 
     ] })
   ] });
 }
+function findNextInCourse(lessonId, courses) {
+  for (const course of courses) {
+    const cj = course.courseJson;
+    for (const mod of cj.modules) {
+      const idx = mod.lessonRefs.indexOf(lessonId);
+      if (idx >= 0 && idx < mod.lessonRefs.length - 1) return mod.lessonRefs[idx + 1];
+    }
+  }
+  return null;
+}
 function LessonPlayer({ lessonId }) {
   const navigate = useStore((s) => s.navigate);
   const [lesson, setLesson] = reactExports.useState(null);
   const [progress, setProgress] = reactExports.useState(null);
+  const [courses, setCourses] = reactExports.useState([]);
+  const [finished, setFinished] = reactExports.useState(false);
   reactExports.useEffect(() => {
+    setFinished(false);
     void api.lessons.get(lessonId).then(setLesson);
     void api.lessons.getProgress(lessonId).then(setProgress);
+    void api.courses.list().then(setCourses);
   }, [lessonId]);
   if (!lesson || !progress) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading lesson…" });
   const lj = lesson.lessonJson;
@@ -16609,6 +16739,24 @@ function LessonPlayer({ lessonId }) {
     const next = { ...progress, ...patch };
     setProgress(next);
     void api.lessons.setProgress(next);
+  }
+  if (finished) {
+    const nextLessonId = findNextInCourse(lessonId, courses);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 36 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { style: { marginTop: 0 }, children: "Lesson complete" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "muted", children: [
+        lj.title,
+        " · ",
+        lj.steps.length,
+        " step",
+        lj.steps.length === 1 ? "" : "s",
+        lj.exercises.length > 0 ? ` · ${lj.exercises.length} exercise${lj.exercises.length === 1 ? "" : "s"}` : ""
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "center", gap: 8, marginTop: 14 }, children: [
+        nextLessonId && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => navigate({ name: "lesson", lessonId: nextLessonId }), children: "Next lesson →" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => navigate({ name: "lessons" }), children: "Back to Lessons" })
+      ] })
+    ] }) });
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
@@ -16645,11 +16793,25 @@ function LessonPlayer({ lessonId }) {
         },
         onFinished: () => {
           saveProgress({ status: "completed", lessonId });
-          navigate({ name: "lessons" });
+          setFinished(true);
         }
       }
     )
   ] });
+}
+function currentStreak(results) {
+  let streak = 0;
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (results[i] !== "correct") break;
+    streak++;
+  }
+  return streak;
+}
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1e3);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 function Exercises({ initialTag }) {
   const [all, setAll] = reactExports.useState([]);
@@ -16659,6 +16821,8 @@ function Exercises({ initialTag }) {
   const [solvedCount, setSolvedCount] = reactExports.useState(0);
   const [results, setResults] = reactExports.useState([]);
   const [attempted, setAttempted] = reactExports.useState(false);
+  const [elapsedMs, setElapsedMs] = reactExports.useState(0);
+  const sessionStartRef = reactExports.useRef(0);
   const refresh = reactExports.useCallback(() => {
     void api.exercises.list().then(setAll);
   }, []);
@@ -16676,6 +16840,8 @@ function Exercises({ initialTag }) {
     setSolvedCount(0);
     setResults([]);
     setAttempted(false);
+    sessionStartRef.current = Date.now();
+    setElapsedMs(0);
   }
   async function startSession() {
     const due = await api.exercises.due();
@@ -16694,6 +16860,11 @@ function Exercises({ initialTag }) {
   reactExports.useEffect(() => {
     if (sessionJustFinished) playSound("complete");
   }, [sessionJustFinished]);
+  reactExports.useEffect(() => {
+    if (!session || sessionJustFinished) return;
+    const t = setInterval(() => setElapsedMs(Date.now() - sessionStartRef.current), 1e3);
+    return () => clearInterval(t);
+  }, [session, sessionJustFinished]);
   if (session) {
     const current = session[idx];
     if (!current) {
@@ -16705,7 +16876,9 @@ function Exercises({ initialTag }) {
             /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: solvedCount }),
             " of ",
             session.length,
-            " solved on the first try."
+            " solved on the first try",
+            elapsedMs > 0 ? ` in ${formatElapsed(elapsedMs)}` : "",
+            "."
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "center", gap: 4, margin: "10px 0" }, children: results.map((r, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
             "span",
@@ -16735,18 +16908,32 @@ function Exercises({ initialTag }) {
         " · ",
         current.title
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4, marginBottom: 10 }, children: session.map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "span",
-        {
-          style: {
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: i < results.length ? results[i] === "correct" ? "var(--accent-strong)" : "var(--danger)" : i === idx ? "var(--info)" : "var(--border)"
-          }
-        },
-        i
-      )) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 14, marginBottom: 10, justifyContent: "space-between", flexWrap: "wrap" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4 }, children: session.map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
+          {
+            style: {
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: i < results.length ? results[i] === "correct" ? "var(--accent-strong)" : "var(--danger)" : i === idx ? "var(--info)" : "var(--border)"
+            }
+          },
+          i
+        )) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row muted", style: { gap: 12, fontSize: 12.5 }, children: [
+          currentStreak(results) > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+            "🔥 ",
+            currentStreak(results),
+            " streak"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+            solvedCount,
+            " solved"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: formatElapsed(elapsedMs) })
+        ] })
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(
         PuzzleBoard,
         {
@@ -16814,7 +17001,7 @@ function Exercises({ initialTag }) {
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.type.replace(/_/g, " ") }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: e.tags.slice(0, 3).map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", style: { marginRight: 4 }, children: t }, t)) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: "★".repeat(e.difficulty) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.dueAt ? e.dueAt.slice(0, 10) : "—" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: formatDue(e.dueAt) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: (ev) => {
           ev.stopPropagation();
           void beginSession([e]);
@@ -17402,6 +17589,29 @@ function Settings() {
     ] })
   ] });
 }
+function SessionBanner() {
+  const sessionQueue = useStore((s) => s.sessionQueue);
+  const sessionIndex = useStore((s) => s.sessionIndex);
+  const advanceSession = useStore((s) => s.advanceSession);
+  const endSession = useStore((s) => s.endSession);
+  if (sessionQueue.length === 0) return null;
+  const task = sessionQueue[sessionIndex];
+  const isLast = sessionIndex >= sessionQueue.length - 1;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "session-banner", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+      "Task ",
+      sessionIndex + 1,
+      " of ",
+      sessionQueue.length,
+      " — ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: task.title })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 6 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: advanceSession, children: isLast ? "Finish session" : "Next →" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: endSession, title: "End guided session", children: "✕" })
+    ] })
+  ] });
+}
 function App() {
   const route = useStore((s) => s.route);
   const importModalOpen = useStore((s) => s.importModalOpen);
@@ -17458,7 +17668,10 @@ function App() {
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "app-shell", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(Sidebar, {}),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "main-content", children: content }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main-col", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(SessionBanner, {}),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "main-content", children: content })
+    ] }),
     importModalOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ImportModal, {}),
     onboardingOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(Onboarding, {})
   ] });
