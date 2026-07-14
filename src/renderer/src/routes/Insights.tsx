@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
+import { openingLabel } from '@shared/eco-names'
 import type { AccuracyPoint, RatingPoint, ResultsSplit, StatsOverview } from '@shared/types'
 
 const TIME_CLASS_LABEL: Record<string, string> = {
@@ -236,7 +237,7 @@ export function Insights(): React.JSX.Element {
                     onClick={() => navigate({ name: 'games', ecoFilter: o.ecoCode })}
                   >
                     <td>
-                      {o.openingName ?? o.ecoCode} <span className="muted mono">{o.ecoCode}</span>
+                      {openingLabel(o)} <span className="muted mono">{o.ecoCode}</span>
                     </td>
                     <td className="muted">{o.color}</td>
                     <td className="muted">{o.games}</td>

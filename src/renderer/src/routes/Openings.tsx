@@ -4,13 +4,24 @@ import { api } from '../api'
 import { useAppEvent } from '../store'
 import { Board } from '../components/Board'
 import { OPENINGS, type Opening, type OpeningLine } from '@shared/openings'
-import type { RepertoireNodeRecord } from '@shared/types'
+import { openingLabel } from '@shared/eco-names'
+import type { OpeningStat, RepertoireNodeRecord } from '@shared/types'
+
+/** Best OPENINGS-library match for an ECO code: exact code, else same A-letter+decade (e.g. C5x). */
+function matchLibraryOpening(ecoCode: string): Opening | undefined {
+  return OPENINGS.find((o) => o.eco === ecoCode) ?? OPENINGS.find((o) => o.eco[0] === ecoCode[0] && o.eco[1] === ecoCode[1])
+}
 
 const PRIORITIES: RepertoireNodeRecord['priority'][] = ['must-know', 'normal', 'optional', 'avoid', 'experimental']
 
 function moveNumberOf(node: RepertoireNodeRecord): number {
   const parts = node.fenBefore.split(' ')
   return parseInt(parts[5] ?? '1') || 1
+}
+
+/** True for nodes where it's the repertoire owner's move (vs. an opponent-reply context node). */
+function isUserMove(node: RepertoireNodeRecord): boolean {
+  return node.fenBefore.split(' ')[1] === (node.color === 'white' ? 'w' : 'b')
 }
 
 function fenAfterMove(fenBefore: string, uci: string): string {
@@ -266,11 +277,18 @@ function LineViewer({ opening, line }: { opening: Opening; line: OpeningLine }):
   )
 }
 
-function Library(): React.JSX.Element {
-  const [openingId, setOpeningId] = useState(OPENINGS[0].id)
+function Library({
+  openingId,
+  onOpeningIdChange
+}: {
+  openingId: string
+  onOpeningIdChange: (id: string) => void
+}): React.JSX.Element {
   const [lineIdx, setLineIdx] = useState(0)
   const opening = OPENINGS.find((o) => o.id === openingId) ?? OPENINGS[0]
   const line = opening.lines[Math.min(lineIdx, opening.lines.length - 1)]
+
+  useEffect(() => setLineIdx(0), [openingId])
 
   return (
     <div className="row" style={{ alignItems: 'flex-start', gap: 16 }}>
@@ -279,10 +297,7 @@ function Library(): React.JSX.Element {
           <div key={o.id}>
             <button
               className={`nav-item ${o.id === openingId ? 'active' : ''}`}
-              onClick={() => {
-                setOpeningId(o.id)
-                setLineIdx(0)
-              }}
+              onClick={() => onOpeningIdChange(o.id)}
               title={o.summary}
             >
               <span style={{ flex: 1 }}>{o.name}</span>
@@ -316,12 +331,22 @@ export function Openings(): React.JSX.Element {
   const [nodes, setNodes] = useState<RepertoireNodeRecord[]>([])
   const [selected, setSelected] = useState<RepertoireNodeRecord | null>(null)
   const [practice, setPractice] = useState<RepertoireNodeRecord[] | null>(null)
+  const [libOpeningId, setLibOpeningId] = useState(OPENINGS[0].id)
+  const [openingStats, setOpeningStats] = useState<OpeningStat[]>([])
 
   const refresh = useCallback(() => {
     void api.repertoire.list(color).then(setNodes)
   }, [color])
   useEffect(refresh, [refresh])
   useAppEvent(['repertoire:changed'], refresh)
+  useEffect(() => {
+    void api.stats.overview().then((s) => setOpeningStats(s.openings))
+  }, [])
+
+  function studyOpening(opening: Opening): void {
+    setLibOpeningId(opening.id)
+    setTab('library')
+  }
 
   // count only positions where the user is to move — opponent replies are auto-played in practice
   const dueCount = useMemo(
@@ -424,9 +449,33 @@ export function Openings(): React.JSX.Element {
       </div>
 
       {tab === 'library' ? (
-        <Library />
+        <Library openingId={libOpeningId} onOpeningIdChange={setLibOpeningId} />
       ) : (
         <>
+      {openingStats.length > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h3>Your openings</h3>
+          <div className="col" style={{ gap: 6 }}>
+            {openingStats.slice(0, 5).map((o) => {
+              const match = matchLibraryOpening(o.ecoCode)
+              const score = o.games > 0 ? ((o.wins + o.draws * 0.5) / o.games) * 100 : 0
+              return (
+                <div key={`${o.ecoCode}-${o.color}`} className="row" style={{ justifyContent: 'space-between', gap: 10 }}>
+                  <span className="muted">
+                    <b style={{ color: 'var(--text)' }}>{openingLabel(o)}</b> — {o.games} games as {o.color},{' '}
+                    {score.toFixed(0)}% score
+                  </span>
+                  {match && (
+                    <button className="small" onClick={() => studyOpening(match)}>
+                      Study this opening
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
       <div className="row" style={{ marginBottom: 14 }}>
         <div className="tabs" style={{ marginBottom: 0, borderBottom: 'none' }}>
           <button className={color === 'white' ? 'active' : ''} onClick={() => setColor('white')}>
@@ -468,7 +517,7 @@ export function Openings(): React.JSX.Element {
                   <thead>
                     <tr>
                       <th>Move</th>
-                      <th>Your move</th>
+                      <th>Played</th>
                       <th>Status</th>
                       <th>Priority</th>
                       <th>Due</th>
@@ -476,35 +525,51 @@ export function Openings(): React.JSX.Element {
                     </tr>
                   </thead>
                   <tbody>
-                    {g.nodes.map((n) => (
+                    {g.nodes.map((n) => {
+                      const own = isUserMove(n)
+                      return (
                       <tr
                         key={n.id}
                         className={`clickable ${selected?.id === n.id ? 'selected' : ''}`}
+                        style={own ? undefined : { opacity: 0.6 }}
                         onClick={() => setSelected(n)}
                       >
                         <td className="muted">{moveNumberOf(n)}.</td>
                         <td className="mono">
-                          <b>{n.moveSan}</b>
+                          <b>{n.moveSan}</b>{' '}
+                          {!own && (
+                            <span className="muted" style={{ fontSize: 10.5 }}>
+                              (opponent)
+                            </span>
+                          )}
                         </td>
                         <td>
-                          <span className={`badge ${n.status === 'known' ? 'green' : n.status === 'lapsed' ? 'red' : 'blue'}`}>
-                            {n.status}
-                          </span>
+                          {own ? (
+                            <span className={`badge ${n.status === 'known' ? 'green' : n.status === 'lapsed' ? 'red' : 'blue'}`}>
+                              {n.status}
+                            </span>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
                         </td>
                         <td>
-                          <select
-                            value={n.priority}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => void api.repertoire.setPriority(n.id, e.target.value as RepertoireNodeRecord['priority'])}
-                          >
-                            {PRIORITIES.map((p) => (
-                              <option key={p} value={p}>
-                                {p}
-                              </option>
-                            ))}
-                          </select>
+                          {own ? (
+                            <select
+                              value={n.priority}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => void api.repertoire.setPriority(n.id, e.target.value as RepertoireNodeRecord['priority'])}
+                            >
+                              {PRIORITIES.map((p) => (
+                                <option key={p} value={p}>
+                                  {p}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
                         </td>
-                        <td className="muted">{n.dueAt ? n.dueAt.slice(0, 10) : '—'}</td>
+                        <td className="muted">{own && n.dueAt ? n.dueAt.slice(0, 10) : '—'}</td>
                         <td>
                           <button
                             className="small danger"
@@ -519,7 +584,8 @@ export function Openings(): React.JSX.Element {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>

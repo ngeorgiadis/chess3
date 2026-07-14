@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore, useAppEvent } from '../store'
 import { Board } from '../components/Board'
+import { openingLabel } from '@shared/eco-names'
 import type { GameFilters, GameRecord } from '@shared/types'
 
 function resultBadge(game: GameRecord): React.JSX.Element {
@@ -231,7 +232,7 @@ export function Games({ initialText }: { initialText?: string }): React.JSX.Elem
                       <td>{g.blackName ?? '?'} {g.blackRating ? <span className="muted">({g.blackRating})</span> : null}</td>
                       <td>{resultBadge(g)}</td>
                       <td className="muted">{g.timeClass ?? '—'}</td>
-                      <td className="muted">{g.openingName ?? g.ecoCode ?? '—'}</td>
+                      <td className="muted" title={g.ecoCode ?? undefined}>{openingLabel(g)}</td>
                       <td>{g.mistakeCount > 0 ? <span className="badge yellow">{g.mistakeCount}</span> : <span className="muted">—</span>}</td>
                       <td>{accuracyCell(g)}</td>
                       <td>

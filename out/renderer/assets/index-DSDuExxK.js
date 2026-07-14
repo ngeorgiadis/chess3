@@ -14270,6 +14270,315 @@ function Board({
     }
   );
 }
+const OPENINGS = [
+  {
+    id: "italian-game",
+    name: "Italian Game",
+    eco: "C50",
+    side: "white",
+    summary: "Classical development: bishop to its most natural attacking square. Solid plans, open positions.",
+    lines: [
+      {
+        name: "Giuoco Piano (main line)",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O"],
+        note: "The quiet build-up: c3 prepares d4, castle early and expand slowly."
+      },
+      {
+        name: "Giuoco Piano, center push",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Bd2", "Bxd2+", "Nbxd2", "d5"],
+        note: "The sharp central break — know the ...Bb4+ resource."
+      },
+      {
+        name: "Two Knights Defense",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3", "Be7", "O-O", "O-O"],
+        note: "Against 3...Nf6, the modern d3 keeps a stable center."
+      }
+    ]
+  },
+  {
+    id: "ruy-lopez",
+    name: "Ruy Lopez (Spanish)",
+    eco: "C60",
+    side: "white",
+    summary: "The most principled fight for the center: pressure on c6 undermines e5.",
+    lines: [
+      {
+        name: "Morphy Defense (main line)",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
+        note: "The tabiya of classical chess — both sides complete development before the fight starts."
+      },
+      {
+        name: "Berlin Defense",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6", "O-O", "Nxe4", "d4", "Nd6", "Bxc6", "dxc6", "dxe5", "Nf5"],
+        note: "Solid equalizing try for Black; the famous endgame structure."
+      },
+      {
+        name: "Exchange Variation",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6", "dxc6", "O-O", "f6", "d4", "exd4", "Nxd4"],
+        note: "White plays for the superior pawn structure in the endgame."
+      }
+    ]
+  },
+  {
+    id: "scotch-game",
+    name: "Scotch Game",
+    eco: "C45",
+    side: "white",
+    summary: "Open the center immediately with d4. Direct piece play, fewer theory-heavy branches.",
+    lines: [
+      {
+        name: "Main line",
+        san: ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5", "c4"],
+        note: "The Mieses variation — sharp play against the d5-knight."
+      },
+      {
+        name: "Classical ...Bc5",
+        san: ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Bc5", "Be3", "Qf6", "c3", "Nge7"],
+        note: "Black targets d4; Be3 and c3 keep the knight anchored."
+      }
+    ]
+  },
+  {
+    id: "sicilian-defense",
+    name: "Sicilian Defense",
+    eco: "B20",
+    side: "black",
+    summary: "The fighting reply to 1.e4: trade a wing pawn for the center and play for the win.",
+    lines: [
+      {
+        name: "Najdorf Variation",
+        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7"],
+        note: "...a6 keeps every option open; ...e5 grabs central space."
+      },
+      {
+        name: "Dragon Variation",
+        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "g6", "Be3", "Bg7", "f3", "O-O"],
+        note: "The long-diagonal bishop is the soul of the Dragon."
+      },
+      {
+        name: "Classical Variation",
+        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "Nc6", "Be2", "e5", "Nb3", "Be7"],
+        note: "Natural development first — a good first Sicilian."
+      }
+    ]
+  },
+  {
+    id: "french-defense",
+    name: "French Defense",
+    eco: "C00",
+    side: "black",
+    summary: "Solid pawn chain, counterattack with ...c5 and ...f6. Accepts a cramped light-squared bishop.",
+    lines: [
+      {
+        name: "Advance Variation",
+        san: ["e4", "e6", "d4", "d5", "e5", "c5", "c3", "Nc6", "Nf3", "Qb6", "Be2", "cxd4", "cxd4", "Nh6"],
+        note: "Attack the base of the chain: c5 and Qb6 hit d4/b2."
+      },
+      {
+        name: "Winawer Variation",
+        san: ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3", "Ne7"],
+        note: "Structural imbalance: Black gives the bishop pair for damaged white pawns."
+      },
+      {
+        name: "Exchange Variation",
+        san: ["e4", "e6", "d4", "d5", "exd5", "exd5", "Nf3", "Nf6", "Bd3", "Bd6", "O-O", "O-O"],
+        note: "Symmetrical but not dead — develop actively and fight for e-file control."
+      }
+    ]
+  },
+  {
+    id: "caro-kann",
+    name: "Caro-Kann Defense",
+    eco: "B10",
+    side: "black",
+    summary: "The solid ...d5 defense without locking in the c8-bishop. Great pawn structures.",
+    lines: [
+      {
+        name: "Classical Variation",
+        san: ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
+        note: "The bishop gets out before ...e6. Mind the h4-h5 space grab."
+      },
+      {
+        name: "Advance Variation",
+        san: ["e4", "c6", "d4", "d5", "e5", "Bf5", "Nf3", "e6", "Be2", "Nd7", "O-O", "Ne7"],
+        note: "Same good bishop, French-like structure without the bad bishop."
+      }
+    ]
+  },
+  {
+    id: "scandinavian",
+    name: "Scandinavian Defense",
+    eco: "B01",
+    side: "black",
+    summary: "Challenge e4 on move one. Easy to learn, clear plans — ideal first defense.",
+    lines: [
+      {
+        name: "Main line ...Qa5",
+        san: ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
+        note: "The queen sits safely on a5; ...c6 gives her a retreat."
+      },
+      {
+        name: "Modern ...Qd6",
+        san: ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd6", "d4", "Nf6", "Nf3", "a6", "Be2", "Nc6"],
+        note: "Flexible queen placement, often with ...g6 setups."
+      }
+    ]
+  },
+  {
+    id: "queens-gambit",
+    name: "Queen's Gambit",
+    eco: "D30",
+    side: "white",
+    summary: "Offer the c-pawn to deflect Black from the center. The backbone of 1.d4 play.",
+    lines: [
+      {
+        name: "QGD Orthodox",
+        san: ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
+        note: "Declined: Black keeps the center and unwinds slowly."
+      },
+      {
+        name: "QGD Exchange",
+        san: ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "cxd5", "exd5", "Bg5", "c6", "e3", "Bf5"],
+        note: "The minority-attack structure — b4-b5 comes later."
+      },
+      {
+        name: "Queen’s Gambit Accepted",
+        san: ["d4", "d5", "c4", "dxc4", "Nf3", "Nf6", "e3", "e6", "Bxc4", "c5", "O-O", "a6"],
+        note: "Black returns the pawn for quick development and ...c5."
+      }
+    ]
+  },
+  {
+    id: "slav-defense",
+    name: "Slav Defense",
+    eco: "D10",
+    side: "black",
+    summary: "Defend d5 with ...c6 and keep the c8-bishop free. Rock-solid against the Queen’s Gambit.",
+    lines: [
+      {
+        name: "Main line",
+        san: ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
+        note: "Take on c4 only after Nc3, then develop the bishop before ...e6."
+      },
+      {
+        name: "Semi-Slav",
+        san: ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "e6", "e3", "Nbd7", "Bd3", "dxc4", "Bxc4", "b5"],
+        note: "The Meran structure: ...dxc4 and ...b5 gain time on the bishop."
+      }
+    ]
+  },
+  {
+    id: "london-system",
+    name: "London System",
+    eco: "D02",
+    side: "white",
+    summary: "A system, not a theory battle: Bf4, e3, c3 pyramid against almost anything.",
+    lines: [
+      {
+        name: "Main setup vs ...d5",
+        san: ["d4", "d5", "Bf4", "Nf6", "e3", "c5", "c3", "Nc6", "Nd2", "e6", "Ngf3", "Bd6", "Bg3", "O-O", "Bd3"],
+        note: "The full pyramid; recapture on g3 keeps the structure intact."
+      },
+      {
+        name: "vs King’s Indian setups",
+        san: ["d4", "Nf6", "Bf4", "g6", "e3", "Bg7", "Nf3", "O-O", "Be2", "d6", "h3", "Nbd7", "O-O"],
+        note: "Keep the dark-squared bishop safe with h3 before Black plays ...Nh5."
+      }
+    ]
+  },
+  {
+    id: "kings-indian",
+    name: "King's Indian Defense",
+    eco: "E60",
+    side: "black",
+    summary: "Concede the center, then strike back with ...e5 or ...c5 and attack the king.",
+    lines: [
+      {
+        name: "Classical main line",
+        san: ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6", "d5", "Ne7"],
+        note: "The famous race: Black attacks on the kingside, White on the queenside."
+      },
+      {
+        name: "Fianchetto Variation",
+        san: ["d4", "Nf6", "c4", "g6", "Nf3", "Bg7", "g3", "O-O", "Bg2", "d6", "O-O", "Nbd7", "Nc3", "e5"],
+        note: "White’s calm setup — Black equalizes with the standard ...e5 break."
+      }
+    ]
+  },
+  {
+    id: "nimzo-indian",
+    name: "Nimzo-Indian Defense",
+    eco: "E20",
+    side: "black",
+    summary: "Pin the knight, fight for e4, and play against doubled c-pawns. Strategically rich.",
+    lines: [
+      {
+        name: "Rubinstein (4.e3)",
+        san: ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
+        note: "Both sides develop naturally; the central tension resolves later."
+      },
+      {
+        name: "Classical (4.Qc2)",
+        san: ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Qc2", "O-O", "a3", "Bxc3+", "Qxc3", "b6", "Bg5", "Bb7"],
+        note: "White avoids doubled pawns at the cost of time; ...b6 and ...Bb7 hit e4."
+      }
+    ]
+  },
+  {
+    id: "english-opening",
+    name: "English Opening",
+    eco: "A10",
+    side: "white",
+    summary: "Flank control of d5. Flexible move orders that can transpose almost anywhere.",
+    lines: [
+      {
+        name: "Four Knights",
+        san: ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
+        note: "A reversed Sicilian with an extra tempo — pressure on the long diagonal."
+      },
+      {
+        name: "Symmetrical",
+        san: ["c4", "c5", "Nc3", "Nc6", "g3", "g6", "Bg2", "Bg7", "Nf3", "Nf6", "O-O", "O-O", "d4", "cxd4", "Nxd4"],
+        note: "The main tabiya of the Symmetrical English."
+      }
+    ]
+  }
+];
+const RANGES = [
+  { from: "A00", to: "A39", name: "Flank opening" },
+  { from: "A40", to: "A44", name: "Queen's Pawn Game" },
+  { from: "A45", to: "A49", name: "Indian Defense" },
+  { from: "A50", to: "A79", name: "Benoni / Indian Defense" },
+  { from: "A80", to: "A99", name: "Dutch Defense" },
+  { from: "B00", to: "B19", name: "Uncommon King's Pawn Defense" },
+  { from: "B20", to: "B99", name: "Sicilian Defense" },
+  { from: "C00", to: "C19", name: "French Defense" },
+  { from: "C20", to: "C29", name: "King's Pawn Game" },
+  { from: "C30", to: "C39", name: "King's Gambit" },
+  { from: "C40", to: "C49", name: "Open Game" },
+  { from: "C50", to: "C59", name: "Italian Game" },
+  { from: "C60", to: "C99", name: "Ruy Lopez (Spanish)" },
+  { from: "D00", to: "D05", name: "Queen's Pawn Game" },
+  { from: "D06", to: "D69", name: "Queen's Gambit" },
+  { from: "D70", to: "D99", name: "Grünfeld Defense" },
+  { from: "E00", to: "E09", name: "Catalan Opening" },
+  { from: "E10", to: "E59", name: "Nimzo-Indian / Bogo-Indian" },
+  { from: "E60", to: "E99", name: "King's Indian Defense" }
+];
+const EXACT = new Map(OPENINGS.map((o) => [o.eco, o.name]));
+function ecoFamilyName(eco) {
+  const code = eco.trim().toUpperCase();
+  if (!/^[A-E]\d{2}$/.test(code)) return null;
+  const exact = EXACT.get(code);
+  if (exact) return exact;
+  const range = RANGES.find((r) => code >= r.from && code <= r.to);
+  return range?.name ?? null;
+}
+function openingLabel(game) {
+  if (game.openingName) return game.openingName;
+  if (game.ecoCode) return ecoFamilyName(game.ecoCode) ?? game.ecoCode;
+  return "—";
+}
 function resultBadge(game) {
   const r = game.result;
   let cls = "";
@@ -14491,7 +14800,7 @@ function Games({ initialText }) {
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: resultBadge(g) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.timeClass ?? "—" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.openingName ?? g.ecoCode ?? "—" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", title: g.ecoCode ?? void 0, children: openingLabel(g) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: g.mistakeCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: g.mistakeCount }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: accuracyCell(g) }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
@@ -14735,7 +15044,7 @@ function Insights() {
               onClick: () => navigate({ name: "games", ecoFilter: o.ecoCode }),
               children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  o.openingName ?? o.ecoCode,
+                  openingLabel(o),
                   " ",
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted mono", children: o.ecoCode })
                 ] }),
@@ -15148,7 +15457,7 @@ function Review({ gameId }) {
             game.timeClass ?? ""
           ] })
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: game.openingName ?? game.ecoCode ?? "" })
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", title: game.ecoCode ?? void 0, children: game.ecoCode ? openingLabel(game) : "" })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => navigate({ name: "games" }), children: "← Games" })
     ] }),
@@ -15372,284 +15681,16 @@ function Review({ gameId }) {
     ] })
   ] });
 }
-const OPENINGS = [
-  {
-    id: "italian-game",
-    name: "Italian Game",
-    eco: "C50",
-    side: "white",
-    summary: "Classical development: bishop to its most natural attacking square. Solid plans, open positions.",
-    lines: [
-      {
-        name: "Giuoco Piano (main line)",
-        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O"],
-        note: "The quiet build-up: c3 prepares d4, castle early and expand slowly."
-      },
-      {
-        name: "Giuoco Piano, center push",
-        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Bd2", "Bxd2+", "Nbxd2", "d5"],
-        note: "The sharp central break — know the ...Bb4+ resource."
-      },
-      {
-        name: "Two Knights Defense",
-        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3", "Be7", "O-O", "O-O"],
-        note: "Against 3...Nf6, the modern d3 keeps a stable center."
-      }
-    ]
-  },
-  {
-    id: "ruy-lopez",
-    name: "Ruy Lopez (Spanish)",
-    eco: "C60",
-    side: "white",
-    summary: "The most principled fight for the center: pressure on c6 undermines e5.",
-    lines: [
-      {
-        name: "Morphy Defense (main line)",
-        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
-        note: "The tabiya of classical chess — both sides complete development before the fight starts."
-      },
-      {
-        name: "Berlin Defense",
-        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6", "O-O", "Nxe4", "d4", "Nd6", "Bxc6", "dxc6", "dxe5", "Nf5"],
-        note: "Solid equalizing try for Black; the famous endgame structure."
-      },
-      {
-        name: "Exchange Variation",
-        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6", "dxc6", "O-O", "f6", "d4", "exd4", "Nxd4"],
-        note: "White plays for the superior pawn structure in the endgame."
-      }
-    ]
-  },
-  {
-    id: "scotch-game",
-    name: "Scotch Game",
-    eco: "C45",
-    side: "white",
-    summary: "Open the center immediately with d4. Direct piece play, fewer theory-heavy branches.",
-    lines: [
-      {
-        name: "Main line",
-        san: ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5", "c4"],
-        note: "The Mieses variation — sharp play against the d5-knight."
-      },
-      {
-        name: "Classical ...Bc5",
-        san: ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Bc5", "Be3", "Qf6", "c3", "Nge7"],
-        note: "Black targets d4; Be3 and c3 keep the knight anchored."
-      }
-    ]
-  },
-  {
-    id: "sicilian-defense",
-    name: "Sicilian Defense",
-    eco: "B20",
-    side: "black",
-    summary: "The fighting reply to 1.e4: trade a wing pawn for the center and play for the win.",
-    lines: [
-      {
-        name: "Najdorf Variation",
-        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7"],
-        note: "...a6 keeps every option open; ...e5 grabs central space."
-      },
-      {
-        name: "Dragon Variation",
-        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "g6", "Be3", "Bg7", "f3", "O-O"],
-        note: "The long-diagonal bishop is the soul of the Dragon."
-      },
-      {
-        name: "Classical Variation",
-        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "Nc6", "Be2", "e5", "Nb3", "Be7"],
-        note: "Natural development first — a good first Sicilian."
-      }
-    ]
-  },
-  {
-    id: "french-defense",
-    name: "French Defense",
-    eco: "C00",
-    side: "black",
-    summary: "Solid pawn chain, counterattack with ...c5 and ...f6. Accepts a cramped light-squared bishop.",
-    lines: [
-      {
-        name: "Advance Variation",
-        san: ["e4", "e6", "d4", "d5", "e5", "c5", "c3", "Nc6", "Nf3", "Qb6", "Be2", "cxd4", "cxd4", "Nh6"],
-        note: "Attack the base of the chain: c5 and Qb6 hit d4/b2."
-      },
-      {
-        name: "Winawer Variation",
-        san: ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3", "Ne7"],
-        note: "Structural imbalance: Black gives the bishop pair for damaged white pawns."
-      },
-      {
-        name: "Exchange Variation",
-        san: ["e4", "e6", "d4", "d5", "exd5", "exd5", "Nf3", "Nf6", "Bd3", "Bd6", "O-O", "O-O"],
-        note: "Symmetrical but not dead — develop actively and fight for e-file control."
-      }
-    ]
-  },
-  {
-    id: "caro-kann",
-    name: "Caro-Kann Defense",
-    eco: "B10",
-    side: "black",
-    summary: "The solid ...d5 defense without locking in the c8-bishop. Great pawn structures.",
-    lines: [
-      {
-        name: "Classical Variation",
-        san: ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
-        note: "The bishop gets out before ...e6. Mind the h4-h5 space grab."
-      },
-      {
-        name: "Advance Variation",
-        san: ["e4", "c6", "d4", "d5", "e5", "Bf5", "Nf3", "e6", "Be2", "Nd7", "O-O", "Ne7"],
-        note: "Same good bishop, French-like structure without the bad bishop."
-      }
-    ]
-  },
-  {
-    id: "scandinavian",
-    name: "Scandinavian Defense",
-    eco: "B01",
-    side: "black",
-    summary: "Challenge e4 on move one. Easy to learn, clear plans — ideal first defense.",
-    lines: [
-      {
-        name: "Main line ...Qa5",
-        san: ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
-        note: "The queen sits safely on a5; ...c6 gives her a retreat."
-      },
-      {
-        name: "Modern ...Qd6",
-        san: ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd6", "d4", "Nf6", "Nf3", "a6", "Be2", "Nc6"],
-        note: "Flexible queen placement, often with ...g6 setups."
-      }
-    ]
-  },
-  {
-    id: "queens-gambit",
-    name: "Queen's Gambit",
-    eco: "D30",
-    side: "white",
-    summary: "Offer the c-pawn to deflect Black from the center. The backbone of 1.d4 play.",
-    lines: [
-      {
-        name: "QGD Orthodox",
-        san: ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
-        note: "Declined: Black keeps the center and unwinds slowly."
-      },
-      {
-        name: "QGD Exchange",
-        san: ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "cxd5", "exd5", "Bg5", "c6", "e3", "Bf5"],
-        note: "The minority-attack structure — b4-b5 comes later."
-      },
-      {
-        name: "Queen’s Gambit Accepted",
-        san: ["d4", "d5", "c4", "dxc4", "Nf3", "Nf6", "e3", "e6", "Bxc4", "c5", "O-O", "a6"],
-        note: "Black returns the pawn for quick development and ...c5."
-      }
-    ]
-  },
-  {
-    id: "slav-defense",
-    name: "Slav Defense",
-    eco: "D10",
-    side: "black",
-    summary: "Defend d5 with ...c6 and keep the c8-bishop free. Rock-solid against the Queen’s Gambit.",
-    lines: [
-      {
-        name: "Main line",
-        san: ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
-        note: "Take on c4 only after Nc3, then develop the bishop before ...e6."
-      },
-      {
-        name: "Semi-Slav",
-        san: ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "e6", "e3", "Nbd7", "Bd3", "dxc4", "Bxc4", "b5"],
-        note: "The Meran structure: ...dxc4 and ...b5 gain time on the bishop."
-      }
-    ]
-  },
-  {
-    id: "london-system",
-    name: "London System",
-    eco: "D02",
-    side: "white",
-    summary: "A system, not a theory battle: Bf4, e3, c3 pyramid against almost anything.",
-    lines: [
-      {
-        name: "Main setup vs ...d5",
-        san: ["d4", "d5", "Bf4", "Nf6", "e3", "c5", "c3", "Nc6", "Nd2", "e6", "Ngf3", "Bd6", "Bg3", "O-O", "Bd3"],
-        note: "The full pyramid; recapture on g3 keeps the structure intact."
-      },
-      {
-        name: "vs King’s Indian setups",
-        san: ["d4", "Nf6", "Bf4", "g6", "e3", "Bg7", "Nf3", "O-O", "Be2", "d6", "h3", "Nbd7", "O-O"],
-        note: "Keep the dark-squared bishop safe with h3 before Black plays ...Nh5."
-      }
-    ]
-  },
-  {
-    id: "kings-indian",
-    name: "King's Indian Defense",
-    eco: "E60",
-    side: "black",
-    summary: "Concede the center, then strike back with ...e5 or ...c5 and attack the king.",
-    lines: [
-      {
-        name: "Classical main line",
-        san: ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6", "d5", "Ne7"],
-        note: "The famous race: Black attacks on the kingside, White on the queenside."
-      },
-      {
-        name: "Fianchetto Variation",
-        san: ["d4", "Nf6", "c4", "g6", "Nf3", "Bg7", "g3", "O-O", "Bg2", "d6", "O-O", "Nbd7", "Nc3", "e5"],
-        note: "White’s calm setup — Black equalizes with the standard ...e5 break."
-      }
-    ]
-  },
-  {
-    id: "nimzo-indian",
-    name: "Nimzo-Indian Defense",
-    eco: "E20",
-    side: "black",
-    summary: "Pin the knight, fight for e4, and play against doubled c-pawns. Strategically rich.",
-    lines: [
-      {
-        name: "Rubinstein (4.e3)",
-        san: ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
-        note: "Both sides develop naturally; the central tension resolves later."
-      },
-      {
-        name: "Classical (4.Qc2)",
-        san: ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Qc2", "O-O", "a3", "Bxc3+", "Qxc3", "b6", "Bg5", "Bb7"],
-        note: "White avoids doubled pawns at the cost of time; ...b6 and ...Bb7 hit e4."
-      }
-    ]
-  },
-  {
-    id: "english-opening",
-    name: "English Opening",
-    eco: "A10",
-    side: "white",
-    summary: "Flank control of d5. Flexible move orders that can transpose almost anywhere.",
-    lines: [
-      {
-        name: "Four Knights",
-        san: ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
-        note: "A reversed Sicilian with an extra tempo — pressure on the long diagonal."
-      },
-      {
-        name: "Symmetrical",
-        san: ["c4", "c5", "Nc3", "Nc6", "g3", "g6", "Bg2", "Bg7", "Nf3", "Nf6", "O-O", "O-O", "d4", "cxd4", "Nxd4"],
-        note: "The main tabiya of the Symmetrical English."
-      }
-    ]
-  }
-];
+function matchLibraryOpening(ecoCode) {
+  return OPENINGS.find((o) => o.eco === ecoCode) ?? OPENINGS.find((o) => o.eco[0] === ecoCode[0] && o.eco[1] === ecoCode[1]);
+}
 const PRIORITIES = ["must-know", "normal", "optional", "avoid", "experimental"];
 function moveNumberOf(node2) {
   const parts = node2.fenBefore.split(" ");
   return parseInt(parts[5] ?? "1") || 1;
+}
+function isUserMove(node2) {
+  return node2.fenBefore.split(" ")[1] === (node2.color === "white" ? "w" : "b");
 }
 function fenAfterMove(fenBefore, uci) {
   const chess = new Chess(fenBefore);
@@ -15856,21 +15897,21 @@ function LineViewer({ opening, line }) {
     ] })
   ] });
 }
-function Library() {
-  const [openingId, setOpeningId] = reactExports.useState(OPENINGS[0].id);
+function Library({
+  openingId,
+  onOpeningIdChange
+}) {
   const [lineIdx, setLineIdx] = reactExports.useState(0);
   const opening = OPENINGS.find((o) => o.id === openingId) ?? OPENINGS[0];
   const line = opening.lines[Math.min(lineIdx, opening.lines.length - 1)];
+  reactExports.useEffect(() => setLineIdx(0), [openingId]);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 16 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { width: 250, flexShrink: 0, maxHeight: 620, overflowY: "auto", padding: 10 }, children: OPENINGS.map((o) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs(
         "button",
         {
           className: `nav-item ${o.id === openingId ? "active" : ""}`,
-          onClick: () => {
-            setOpeningId(o.id);
-            setLineIdx(0);
-          },
+          onClick: () => onOpeningIdChange(o.id),
           title: o.summary,
           children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1 }, children: o.name }),
@@ -15901,11 +15942,20 @@ function Openings() {
   const [nodes, setNodes] = reactExports.useState([]);
   const [selected, setSelected] = reactExports.useState(null);
   const [practice, setPractice] = reactExports.useState(null);
+  const [libOpeningId, setLibOpeningId] = reactExports.useState(OPENINGS[0].id);
+  const [openingStats, setOpeningStats] = reactExports.useState([]);
   const refresh = reactExports.useCallback(() => {
     void api.repertoire.list(color).then(setNodes);
   }, [color]);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["repertoire:changed"], refresh);
+  reactExports.useEffect(() => {
+    void api.stats.overview().then((s) => setOpeningStats(s.openings));
+  }, []);
+  function studyOpening(opening) {
+    setLibOpeningId(opening.id);
+    setTab("library");
+  }
   const dueCount = reactExports.useMemo(
     () => nodes.filter(
       (n) => n.dueAt && n.dueAt <= (/* @__PURE__ */ new Date()).toISOString() && n.fenBefore.split(" ")[1] === (n.color === "white" ? "w" : "b")
@@ -15978,7 +16028,28 @@ function Openings() {
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: tab === "repertoire" ? "active" : "", onClick: () => setTab("repertoire"), children: "My repertoire" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: tab === "library" ? "active" : "", onClick: () => setTab("library"), children: "Openings library" })
     ] }),
-    tab === "library" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Library, {}) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+    tab === "library" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Library, { openingId: libOpeningId, onOpeningIdChange: setLibOpeningId }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+      openingStats.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Your openings" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: openingStats.slice(0, 5).map((o) => {
+          const match = matchLibraryOpening(o.ecoCode);
+          const score = o.games > 0 ? (o.wins + o.draws * 0.5) / o.games * 100 : 0;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", gap: 10 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("b", { style: { color: "var(--text)" }, children: openingLabel(o) }),
+              " — ",
+              o.games,
+              " games as ",
+              o.color,
+              ",",
+              " ",
+              score.toFixed(0),
+              "% score"
+            ] }),
+            match && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => studyOpening(match), children: "Study this opening" })
+          ] }, `${o.ecoCode}-${o.color}`);
+        }) })
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 14 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tabs", style: { marginBottom: 0, borderBottom: "none" }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: color === "white" ? "active" : "", onClick: () => setColor("white"), children: "As White" }),
@@ -16017,51 +16088,59 @@ function Openings() {
           /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Move" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Your move" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Played" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Priority" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Due" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
             ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: g.nodes.map((n) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "tr",
-              {
-                className: `clickable ${selected?.id === n.id ? "selected" : ""}`,
-                onClick: () => setSelected(n),
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
-                    moveNumberOf(n),
-                    "."
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "mono", children: /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: n.moveSan }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${n.status === "known" ? "green" : n.status === "lapsed" ? "red" : "blue"}`, children: n.status }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "select",
-                    {
-                      value: n.priority,
-                      onClick: (e) => e.stopPropagation(),
-                      onChange: (e) => void api.repertoire.setPriority(n.id, e.target.value),
-                      children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
-                    }
-                  ) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: n.dueAt ? n.dueAt.slice(0, 10) : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "button",
-                    {
-                      className: "small danger",
-                      title: "Delete this move and everything after it in the line",
-                      onClick: (e) => {
-                        e.stopPropagation();
-                        if (!window.confirm(`Remove ${n.moveSan} from your ${color} repertoire? Moves that follow it in this line are removed too.`)) return;
-                        void api.repertoire.delete(n.id);
-                      },
-                      children: "✕"
-                    }
-                  ) })
-                ]
-              },
-              n.id
-            )) })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: g.nodes.map((n) => {
+              const own = isUserMove(n);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "tr",
+                {
+                  className: `clickable ${selected?.id === n.id ? "selected" : ""}`,
+                  style: own ? void 0 : { opacity: 0.6 },
+                  onClick: () => setSelected(n),
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
+                      moveNumberOf(n),
+                      "."
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "mono", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: n.moveSan }),
+                      " ",
+                      !own && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", style: { fontSize: 10.5 }, children: "(opponent)" })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: own ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${n.status === "known" ? "green" : n.status === "lapsed" ? "red" : "blue"}`, children: n.status }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: own ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "select",
+                      {
+                        value: n.priority,
+                        onClick: (e) => e.stopPropagation(),
+                        onChange: (e) => void api.repertoire.setPriority(n.id, e.target.value),
+                        children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
+                      }
+                    ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: own && n.dueAt ? n.dueAt.slice(0, 10) : "—" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: "small danger",
+                        title: "Delete this move and everything after it in the line",
+                        onClick: (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`Remove ${n.moveSan} from your ${color} repertoire? Moves that follow it in this line are removed too.`)) return;
+                          void api.repertoire.delete(n.id);
+                        },
+                        children: "✕"
+                      }
+                    ) })
+                  ]
+                },
+                n.id
+              );
+            }) })
           ] })
         ] }, g.key)) }),
         selected && previewFenAfter && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0, position: "sticky", top: 0 }, children: [

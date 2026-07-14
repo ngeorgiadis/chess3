@@ -10,6 +10,7 @@ import { importLichess, importLichessGame } from './importers/lichess'
 import { importPgnText } from './importers/pgn'
 import { seedContent } from './lessons/store'
 import { backfillUserColors, backfillMissingAccuracy } from './identity'
+import { backfillRepertoireLabels } from './repertoire'
 import type { ImportChessComArgs, ImportLichessArgs, ImportPgnArgs, ImportResult } from '@shared/types'
 import type { JobContext } from './jobs/queue'
 
@@ -118,6 +119,7 @@ app.whenReady().then(async () => {
   try {
     backfillUserColors()
     backfillMissingAccuracy()
+    backfillRepertoireLabels()
   } catch (e) {
     console.warn('Backfill failed on startup:', e)
   }

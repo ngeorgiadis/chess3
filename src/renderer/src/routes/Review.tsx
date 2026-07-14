@@ -5,6 +5,7 @@ import { useStore } from '../store'
 import { Board } from '../components/Board'
 import { PlayOut } from '../components/PlayOut'
 import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
+import { openingLabel } from '@shared/eco-names'
 import type { GameRecord, MistakeRecord, MoveRecord, PositionAnalysis, PvLine } from '@shared/types'
 
 /** White-perspective centipawns for the eval graph / bars. */
@@ -359,7 +360,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
               {game.result} · {game.timeClass ?? ''}
             </span>
           </h1>
-          <p className="subtitle">{game.openingName ?? game.ecoCode ?? ''}</p>
+          <p className="subtitle" title={game.ecoCode ?? undefined}>{game.ecoCode ? openingLabel(game) : ''}</p>
         </div>
         <button onClick={() => navigate({ name: 'games' })}>← Games</button>
       </div>
