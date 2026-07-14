@@ -5,11 +5,13 @@ import { initDb } from './db'
 import { registerIpc, queueAnalysis } from './ipc'
 import { registerJobHandler, recoverJobs, tick } from './jobs/queue'
 import { analyzeGameJob } from './engines/analysis'
+import { annotateGame } from './ai/annotate-agent'
 import { importChessCom } from './importers/chesscom'
 import { importLichess, importLichessGame } from './importers/lichess'
 import { importPgnText } from './importers/pgn'
 import { seedContent } from './lessons/store'
 import { backfillUserColors, backfillMissingAccuracy } from './identity'
+import { backfillRepertoireLabels } from './repertoire'
 import type { ImportChessComArgs, ImportLichessArgs, ImportPgnArgs, ImportResult } from '@shared/types'
 import type { JobContext } from './jobs/queue'
 
@@ -26,6 +28,7 @@ function resourcesDir(): string {
 
 function registerJobHandlers(): void {
   registerJobHandler('analyze-game', analyzeGameJob)
+  registerJobHandler('annotate-game', (payload, ctx: JobContext) => annotateGame((payload as { gameId: string }).gameId, ctx))
   registerJobHandler('import', async (payload, ctx: JobContext) => {
     const p = payload as {
       kind: 'chesscom' | 'lichess' | 'lichess-game' | 'pgn-file'
@@ -118,6 +121,7 @@ app.whenReady().then(async () => {
   try {
     backfillUserColors()
     backfillMissingAccuracy()
+    backfillRepertoireLabels()
   } catch (e) {
     console.warn('Backfill failed on startup:', e)
   }
@@ -153,4 +157,5 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   void import('./engines/live-eval').then(({ liveEval }) => liveEval.shutdown())
+  void import('./engines/play').then(({ playVsEngine }) => playVsEngine.stop())
 })

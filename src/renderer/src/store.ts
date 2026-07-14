@@ -2,11 +2,13 @@ import { create } from 'zustand'
 import { useEffect } from 'react'
 import { api } from './api'
 import { setSoundEnabled } from './sound'
-import type { AppEvent, AppSettings, JobRecord, LiveEvalUpdate } from '@shared/types'
+import { openPlanTask } from './taskNav'
+import type { AppEvent, AppSettings, JobRecord, LiveEvalUpdate, PlanTask } from '@shared/types'
 
 export type Route =
   | { name: 'today' }
-  | { name: 'games' }
+  | { name: 'games'; ecoFilter?: string }
+  | { name: 'insights' }
   | { name: 'review'; gameId: string }
   | { name: 'openings' }
   | { name: 'lessons' }
@@ -27,6 +29,9 @@ interface AppState {
   evalError: string | null
   evalUpdate: LiveEvalUpdate | null
   evalFen: string | null
+  /** Guided "Today" session: the remaining tasks and which one is active. */
+  sessionQueue: PlanTask[]
+  sessionIndex: number
   navigate: (route: Route) => void
   setImportModalOpen: (open: boolean) => void
   setOnboardingOpen: (open: boolean) => void
@@ -35,6 +40,9 @@ interface AppState {
   setEvalEnabled: (on: boolean) => Promise<void>
   /** Boards report the position the user is currently looking at. */
   reportEvalFen: (fen: string) => void
+  startSession: (tasks: PlanTask[]) => void
+  advanceSession: () => void
+  endSession: () => void
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -47,6 +55,8 @@ export const useStore = create<AppState>((set, get) => ({
   evalError: null,
   evalUpdate: null,
   evalFen: null,
+  sessionQueue: [],
+  sessionIndex: 0,
   navigate: (route) => set({ route }),
   setImportModalOpen: (open) => set({ importModalOpen: open }),
   setOnboardingOpen: (open) => set({ onboardingOpen: open }),
@@ -70,7 +80,22 @@ export const useStore = create<AppState>((set, get) => ({
     if (fen === get().evalFen) return
     set({ evalFen: fen })
     if (get().evalEnabled) void api.eval.position(fen)
-  }
+  },
+  startSession: (tasks) => {
+    set({ sessionQueue: tasks, sessionIndex: 0 })
+    if (tasks[0]) openPlanTask(tasks[0], { navigate: get().navigate, setImportModalOpen: get().setImportModalOpen })
+  },
+  advanceSession: () => {
+    const { sessionQueue, sessionIndex } = get()
+    const nextIndex = sessionIndex + 1
+    if (nextIndex >= sessionQueue.length) {
+      set({ sessionQueue: [], sessionIndex: 0 })
+      return
+    }
+    set({ sessionIndex: nextIndex })
+    openPlanTask(sessionQueue[nextIndex], { navigate: get().navigate, setImportModalOpen: get().setImportModalOpen })
+  },
+  endSession: () => set({ sessionQueue: [], sessionIndex: 0 })
 }))
 
 let wired = false

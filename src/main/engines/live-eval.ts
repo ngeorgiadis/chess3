@@ -1,8 +1,7 @@
 // Live position evaluation: one persistent UCI engine that follows whatever
 // board the user is currently looking at, streaming eval updates to the renderer.
 import { UciEngine, uciLineToSan } from './uci'
-import { getEngine, getProfile, listEngines, listProfiles } from './store'
-import { getSettings } from '../settings'
+import { resolveDefaultEngineRecord } from './store'
 import { broadcast } from '../events'
 import type { LiveEvalStatus, LiveEvalUpdate, PvLine } from '@shared/types'
 
@@ -59,23 +58,6 @@ class LiveEvaluator {
     }
   }
 
-  /** Resolve the engine to use: default profile's engine, else first available engine. */
-  private resolveEngineRecord(): { executablePath: string; name: string } {
-    const settings = getSettings()
-    if (settings.defaultProfileId) {
-      const profile = getProfile(settings.defaultProfileId)
-      const eng = profile ? getEngine(profile.engineId) : null
-      if (eng && eng.status === 'available') return { executablePath: eng.executablePath, name: eng.name }
-    }
-    for (const profile of listProfiles()) {
-      const eng = getEngine(profile.engineId)
-      if (eng && eng.status === 'available') return { executablePath: eng.executablePath, name: eng.name }
-    }
-    const first = listEngines().find((e) => e.status === 'available')
-    if (first) return { executablePath: first.executablePath, name: first.name }
-    throw new Error('No UCI engine available. Add one on the Engines screen first.')
-  }
-
   async setEnabled(on: boolean): Promise<LiveEvalStatus> {
     if (!on) {
       this.enabled = false
@@ -83,7 +65,7 @@ class LiveEvaluator {
       return this.status()
     }
     if (this.enabled && this.engine?.isRunning) return this.status()
-    const rec = this.resolveEngineRecord()
+    const rec = resolveDefaultEngineRecord()
     const engine = new UciEngine(rec.executablePath)
     engine.start()
     await engine.handshake()

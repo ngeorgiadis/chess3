@@ -7061,6 +7061,12 @@ const api = {
     status: () => raw["eval:status"](),
     position: (fen) => raw["eval:position"](fen)
   },
+  play: {
+    start: (args) => raw["play:start"](args),
+    move: (uci) => raw["play:move"](uci),
+    stop: () => raw["play:stop"](),
+    status: () => raw["play:status"]()
+  },
   analysis: {
     queue: (gameIds, profileId) => raw["analysis:queue"]({ gameIds, profileId }),
     cancel: (jobId) => raw["analysis:cancel"](jobId),
@@ -7101,9 +7107,22 @@ const api = {
   plan: {
     today: () => raw["plan:today"]()
   },
+  stats: {
+    overview: () => raw["stats:overview"]()
+  },
+  clipboard: {
+    write: (text) => raw["clipboard:write"](text)
+  },
   ai: {
     outline: (args) => raw["ai:outline"](args),
-    generateLesson: (args) => raw["ai:generateLesson"](args)
+    generateLesson: (args) => raw["ai:generateLesson"](args),
+    explainPosition: (gameId, ply) => raw["ai:explainPosition"]({ gameId, ply }),
+    annotateGame: (gameId) => raw["ai:annotateGame"](gameId),
+    annotationsForGame: (gameId) => raw["ai:annotationsForGame"](gameId),
+    coachReport: {
+      generate: () => raw["ai:coachReport:generate"](),
+      latest: () => raw["ai:coachReport:latest"]()
+    }
   },
   onEvent: raw.onEvent
 };
@@ -7164,6 +7183,27 @@ function playSound(kind) {
       break;
   }
 }
+function routeForTask(task) {
+  switch (task.kind) {
+    case "import":
+      return { openImport: true };
+    case "setup-engine":
+      return { name: "engines" };
+    case "exercises":
+      return { name: "exercises" };
+    case "opening-review":
+      return { name: "openings" };
+    case "game-review":
+      return task.targetId ? { name: "review", gameId: task.targetId } : { name: "games" };
+    case "lesson":
+      return task.targetId ? { name: "lesson", lessonId: task.targetId } : { name: "lessons" };
+  }
+}
+function openPlanTask(task, helpers) {
+  const dest = routeForTask(task);
+  if ("openImport" in dest) helpers.setImportModalOpen(true);
+  else helpers.navigate(dest);
+}
 const useStore = create((set, get) => ({
   route: { name: "today" },
   settings: null,
@@ -7174,6 +7214,8 @@ const useStore = create((set, get) => ({
   evalError: null,
   evalUpdate: null,
   evalFen: null,
+  sessionQueue: [],
+  sessionIndex: 0,
   navigate: (route) => set({ route }),
   setImportModalOpen: (open) => set({ importModalOpen: open }),
   setOnboardingOpen: (open) => set({ onboardingOpen: open }),
@@ -7197,7 +7239,22 @@ const useStore = create((set, get) => ({
     if (fen === get().evalFen) return;
     set({ evalFen: fen });
     if (get().evalEnabled) void api.eval.position(fen);
-  }
+  },
+  startSession: (tasks) => {
+    set({ sessionQueue: tasks, sessionIndex: 0 });
+    if (tasks[0]) openPlanTask(tasks[0], { navigate: get().navigate, setImportModalOpen: get().setImportModalOpen });
+  },
+  advanceSession: () => {
+    const { sessionQueue, sessionIndex } = get();
+    const nextIndex = sessionIndex + 1;
+    if (nextIndex >= sessionQueue.length) {
+      set({ sessionQueue: [], sessionIndex: 0 });
+      return;
+    }
+    set({ sessionIndex: nextIndex });
+    openPlanTask(sessionQueue[nextIndex], { navigate: get().navigate, setImportModalOpen: get().setImportModalOpen });
+  },
+  endSession: () => set({ sessionQueue: [], sessionIndex: 0 })
 }));
 let wired = false;
 function wireEvents() {
@@ -7241,6 +7298,7 @@ function useEvalTarget(fen) {
 const NAV = [
   { route: { name: "today" }, label: "Today", icon: "☀" },
   { route: { name: "games" }, label: "Games", icon: "♟" },
+  { route: { name: "insights" }, label: "Insights", icon: "📈" },
   { route: { name: "openings" }, label: "Openings", icon: "⇶" },
   { route: { name: "lessons" }, label: "Lessons", icon: "📖" },
   { route: { name: "exercises" }, label: "Exercises", icon: "🧩" },
@@ -7366,6 +7424,11 @@ function Sidebar() {
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "status-line", children: [
       "AI: ",
       settings?.aiConfig.mode === "manual" ? "manual mode" : settings?.aiConfig.model || "configured"
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "status-line", title: "Press ? anywhere to see keyboard shortcuts", children: [
+      "Press ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: "?" }),
+      " for shortcuts"
     ] })
   ] });
 }
@@ -7888,43 +7951,38 @@ function StreakCalendar({ activeDays, streakDays }) {
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginTop: 4 }, children: streakDays > 0 ? `${streakDays} day streak — keep it going` : "Train today to start a streak" })
   ] });
 }
+function RatingSparkline({ points }) {
+  const recent = points.slice(-10);
+  if (recent.length < 2) return null;
+  const width = 100;
+  const height = 26;
+  const ratings = recent.map((p) => p.rating);
+  const min = Math.min(...ratings);
+  const max = Math.max(...ratings);
+  const span = max - min || 1;
+  const line = recent.map((p, i) => `${(i / (recent.length - 1) * (width - 4) + 2).toFixed(1)},${(height - 2 - (p.rating - min) / span * (height - 4)).toFixed(1)}`).join(" ");
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { viewBox: `0 0 ${width} ${height}`, width, height, style: { display: "block" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: line, fill: "none", stroke: "var(--accent)", strokeWidth: 1.5 }) });
+}
 function Today() {
   const [plan, setPlan] = reactExports.useState(null);
   const [storedTasks, setStoredTasks] = reactExports.useState([]);
+  const [ratingHistory, setRatingHistory] = reactExports.useState([]);
   const navigate = useStore((s) => s.navigate);
   const setImportModalOpen = useStore((s) => s.setImportModalOpen);
   const settings = useStore((s) => s.settings);
+  const startSession = useStore((s) => s.startSession);
   const refresh = reactExports.useCallback(() => {
     void api.plan.today().then((p) => {
       setPlan(p);
       setStoredTasks(loadOrInitStoredTasks(p));
     });
+    void api.stats.overview().then((s) => setRatingHistory(s.ratingHistory));
   }, []);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["games:changed", "exercises:changed", "repertoire:changed", "lessons:changed", "job:completed"], refresh);
+  const latestRating = ratingHistory.length > 0 ? ratingHistory[ratingHistory.length - 1].rating : null;
   function openTask(task) {
-    switch (task.kind) {
-      case "import":
-        setImportModalOpen(true);
-        break;
-      case "setup-engine":
-        navigate({ name: "engines" });
-        break;
-      case "exercises":
-        navigate({ name: "exercises" });
-        break;
-      case "opening-review":
-        navigate({ name: "openings" });
-        break;
-      case "game-review":
-        if (task.targetId) navigate({ name: "review", gameId: task.targetId });
-        else navigate({ name: "games" });
-        break;
-      case "lesson":
-        if (task.targetId) navigate({ name: "lesson", lessonId: task.targetId });
-        else navigate({ name: "lessons" });
-        break;
-    }
+    openPlanTask(task, { navigate, setImportModalOpen });
   }
   if (!plan) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading your plan…" });
   const firstTask = plan.tasks[0];
@@ -7968,7 +8026,7 @@ function Today() {
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => openTask(task), children: "Open" })
           ] }, task.id))
         ] }),
-        firstTask && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", style: { marginTop: 14 }, onClick: () => openTask(firstTask), children: "Start today's session" })
+        firstTask && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", style: { marginTop: 14 }, onClick: () => startSession(plan.tasks), children: "Start today's session" })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 220 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Progress" }),
@@ -7977,13 +8035,16 @@ function Today() {
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "stat-big", children: plan.streakDays }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "day streak" })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "stat-big", children: [
-              settings?.ratingCurrent ?? 1500,
-              "→",
-              settings?.ratingGoal ?? 1800
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row clickable", style: { cursor: "pointer", gap: 10 }, onClick: () => navigate({ name: "insights" }), children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "stat-big", children: [
+                latestRating ?? settings?.ratingCurrent ?? 1500,
+                "→",
+                settings?.ratingGoal ?? 1800
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: latestRating != null ? "rating (latest game) → goal" : "rating goal" })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "rating goal" })
+            /* @__PURE__ */ jsxRuntimeExports.jsx(RatingSparkline, { points: ratingHistory })
           ] })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(StreakCalendar, { activeDays: plan.activeDays, streakDays: plan.streakDays }) }),
@@ -13954,6 +14015,20 @@ const piecesStandardRaw = '<?xml version="1.0" encoding="UTF-8"?><!--\n\nLICENSE
 const piecesStauntyRaw = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<!--\nThe lila Staunty pieces set from\nhttps://github.com/ornicar/lila/tree/master/public/piece/staunty\nmodified by shaack (https://shaack.com) for the usage in cm-chessboard.\nhttps://github.com/shaack/cm-chessboard\n\nLicense: Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)\nhttps://creativecommons.org/licenses/by-nc-sa/4.0/\n\nSee also: https://github.com/ornicar/lila/blob/master/COPYING.md\n-->\n<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">\n    <title>cm-chessboard Staunty pieces and markers sprite</title>\n    <g id="wk" transform="matrix(0.78030303,0,0,0.78030303,0.99250091,1.3663636)">\n        <path d="m 27.67,15.225 v -3.544 h 4.44 V 7.252 H 27.175 V 3.36 H 22.81 v 3.893 h -4.934 v 4.43 h 4.44 v 3.543"\n              fill="#f0f0f0" stroke-linecap="round" stroke-width="1.2" stroke="#1e1e1e" id="path1542"/>\n        <rect x="20.299" y="14.215" width="9.3979998" height="2.7869999" ry="1.3940001" fill="#f0f0f0"\n              stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="rect1544"/>\n        <path d="m 26.416,14.215 c 0.725,0 1.308,0.621 1.308,1.393 0,0.773 -0.583,1.394 -1.308,1.394 h 1.974 c 0.724,0 1.308,-0.621 1.308,-1.393 0,-0.773 -0.584,-1.394 -1.308,-1.394 z"\n              opacity="0.15" id="path1546"/>\n        <path d="m 21.631,14.842 c -0.402,0 -0.725,0.345 -0.725,0.773 0,0.427 0.323,0.772 0.725,0.772 h 0.874 c -0.402,0 -0.725,-0.345 -0.725,-0.772 0,-0.428 0.323,-0.773 0.725,-0.773 z"\n              fill="#ffffff" id="path1548"/>\n        <path d="m 33.635,36.986 c 0,0 7.776,-13.318 6.613,-15.916 -1.164,-2.596 -8.48,-4.497 -15.248,-4.497 -6.768,0 -14.084,1.9 -15.248,4.497 -1.164,2.597 6.612,15.916 6.612,15.916 z"\n              fill="#f0f0f0" stroke-linecap="round" stroke-width="1.2" stroke="#1e1e1e" id="path1550"/>\n        <path d="m 24.996,16.576 c 15.938,2.622 12.573,9.354 6.64,22.543 l 2.028,-1.729 c 0,0 7.747,-13.723 6.584,-16.32 -1.545,-2.833 -7.503,-4.159 -15.252,-4.494 z"\n              opacity="0.15" id="path1552"/>\n        <path d="m 23.765,17.295 c -3.904,-0.184 -14.621,1.801 -13.503,5.017 0.817,3.727 2.754,7.244 4.508,10.504 C 9.083,22.481 8.828,19.042 23.765,17.295 Z M 23.391,3.997 23.375,7.309 h 0.546 l 0.016,-3.312 z m -4.931,3.87 -0.008,3.208 h 0.774 l 0.007,-3.208 z m 4.413,3.213 0.025,2.486 h 0.52 L 23.393,11.08 Z"\n              fill="#ffffff" id="path1554"/>\n        <path d="m 26.189,3.358 v 3.894 h 0.987 V 3.358 Z m 4.441,3.894 v 4.945 h 1.48 V 7.252 Z m -4.44,4.429 v 2.492 h 1.48 v -2.492 z"\n              opacity="0.15" id="path1556"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#f0f0f0" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="path1558"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.503,-0.613 0.887,-0.849 2.56,-1.571 11.691,-1.62 11.691,-1.62 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.592,0.532 0.856,0.87 0.025,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.148 25,37.148 Z"\n              fill="#ffffff" id="path1560"/>\n    </g>\n    <g id="wq" transform="matrix(0.81370661,0,0,0.81370661,0.1573347,-0.13679755)">\n        <path d="m 24.959,5.094 a 2.958,3.316 90 0 0 -3.316,2.958 2.958,3.316 90 0 0 3.316,2.959 2.958,3.316 90 0 0 3.316,-2.959 2.958,3.316 90 0 0 -3.316,-2.958 z"\n              fill="#f0f0f0" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e"\n              id="path1856"/>\n        <path d="M 24.836,5.732 C 24.46,5.522 21.112,6.538 22.651,9.308 22.416,7.763 23.089,6.105 24.836,5.732 Z"\n              fill="#ffffff" id="path1858"/>\n        <path d="m 24.959,11.011 c -6.507,0 -9.595,5.884 -9.595,10.358 h 19.263 c 0,-4.474 -3.16,-10.358 -9.668,-10.358 z"\n              fill="#f0f0f0" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e"\n              id="path1860"/>\n        <path d="m 18.161,14.977 c 1.042,-1.478 2.92,-3.22 6.84,-3.38 -0.31,0.277 -4.788,1.138 -6.84,3.38 z"\n              fill="#ffffff" id="path1862"/>\n        <path d="m 24.836,5.007 c 0,0 0.046,0.238 0,0 2.48,1.129 2.05,3.847 0.817,5.547 7.354,3.803 2.213,8.669 2.212,8.668 h 2.701 c 1.762,1.287 7.209,-2.741 -3.835,-8.67 3.528,-3.115 0.097,-5.606 -1.895,-5.546 z"\n              opacity="0.15" id="path1864"/>\n        <path d="m 25,15.225 c -1.971,0 -2.348,2.65 -4.137,2.86 -1.82,0.213 -3.381,-2.312 -5.25,-1.737 -1.495,0.46 -0.778,2.6 -1.805,3.175 -1.402,0.785 -3.185,-1.832 -5.29,-0.298 6.838,8.829 8.085,12.377 7.983,18.819 h 16.998 c -0.103,-6.443 1.144,-9.99 7.983,-18.82 -2.106,-1.533 -3.889,1.084 -5.29,0.3 -1.027,-0.576 -0.311,-2.716 -1.806,-3.176 -1.868,-0.575 -3.429,1.95 -5.25,1.736 -1.789,-0.21 -2.166,-2.86 -4.137,-2.86 z"\n              fill="#f0f0f0" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e"\n              id="path1866"/>\n        <path d="m 9.895,19.34 c -0.136,-0.01 -0.331,0.056 -0.458,0.085 3.081,4.1 6.575,9.537 7.099,12.417 -1.407,-4.933 -3.267,-9.562 -6.14,-12.472 z"\n              fill="#ffffff" id="path1868"/>\n        <path d="M 39.974,18.735 C 30.489,28.738 30.05,36.72 23.033,38.045 h 10.476 c -0.103,-6.443 1.145,-9.99 7.983,-18.819 0,0 -0.688,-0.756 -1.518,-0.491 z"\n              opacity="0.15" id="path1870"/>\n        <path d="m 14.912,18.945 c 0.203,-0.088 1.184,-1.808 1.98,-1.95 -1.42,-0.346 -1.618,-0.046 -1.98,1.95 z m 7.599,-1.069 c 0.953,-0.847 1.633,-2.655 3.238,-1.845 -0.798,-0.23 -2.215,1.04 -3.238,1.845 z m 8.609,0.257 c 0.21,0.07 2.176,-1.642 2.862,-1.218 0,0 -1.43,1.12 -2.862,1.218 z"\n              fill="#ffffff" id="path1872"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.571 -11.69,-1.62 -11.69,-1.62 z"\n              fill="#f0f0f0" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="path1874"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.502,-0.613 0.887,-0.849 2.56,-1.571 11.691,-1.62 11.691,-1.62 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.593,0.532 0.856,0.87 0.026,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.147 25,37.147 Z"\n              fill="#ffffff" id="path1876"/>\n    </g>\n    <g id="wb" transform="matrix(0.77573871,0,0,0.77573871,1.1065042,1.5417581)">\n        <path d="m 25,5.767 c -2.106,0 -3.812,0.879 -3.812,1.963 l 1.517,2.65 C 6.655,24.47 16.998,37.516 16.998,37.516 h 16.005 c 0,0 7.05,-8.672 0.763,-19.51 l -2.99,4.827 c -0.67,1.084 -1.962,1.49 -2.897,0.911 -0.935,-0.578 -1.147,-1.917 -0.477,-3 l 3.887,-6.277 a 35.382,35.382 0 0 0 -3.993,-4.086 l 1.517,-2.65 c 0,-1.085 -1.707,-1.964 -3.812,-1.964 z"\n              fill="#f0f0f0" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="path1449"/>\n        <path d="m 25,5.767 c -0.816,0 -1.571,0.134 -2.191,0.358 4.338,0.848 4.976,1.12 2.56,4.351 l 3.246,3.567 c -3.657,8.24 -1.604,7.991 -1.604,7.991 0,0 0.696,-2.648 4.112,-7.768 A 35.696,35.696 0 0 0 27.296,10.38 L 28.812,7.73 C 28.812,6.646 27.106,5.767 25,5.767 Z m 8.765,12.238 -1.009,1.513 c 3.737,8.413 -4.134,17.997 -4.134,17.997 h 4.381 c 0.158,0.034 6.958,-8.844 0.762,-19.51 z"\n              opacity="0.15" id="path1451"/>\n        <path d="M 15.145,31.721 C 14.925,31.69 11.722,21.935 20.899,12.97 18.597,14.865 13.764,26.133 15.145,31.721 Z M 23.292,10.196 21.815,7.602 c 0,0 0.242,-0.722 1.78,-1.048 -1.726,1.35 -0.987,1.663 -0.303,3.642 z"\n              fill="#ffffff" id="path1453"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#f0f0f0" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="path1455"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.502,-0.613 0.887,-0.85 C 15.869,37.784 25,37.736 25,37.736 c 0,0 9.132,0.048 11.692,1.619 0.391,0.24 0.592,0.532 0.856,0.87 0.026,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.147 25,37.147 Z"\n              fill="#ffffff" id="path1457"/>\n    </g>\n    <g id="wn" transform="matrix(0.7833885,0,0,0.78330159,1.0320312,1.1996996)">\n        <path d="m 25.192,23.015 c -0.165,6.967 -11.758,5.219 -11.516,18.104 l 22.86,0.118 C 34.442,34.795 46.226,16.077 24.605,8.979 v 0 c 0,0 -2.438,-2.6 -5.965,-2.823 l 0.222,3.534 -4.558,4.582 c -2.63,3.145 -8.735,8.378 -7.751,9.611 3.115,5.304 6.33,4.432 6.33,4.432 4.242,-4.544 5.82,-2.09 12.31,-5.3 z"\n              fill="#f0f0f0" stroke="#1e1e1e" stroke-linejoin="round" stroke-width="1.2" id="path1668"/>\n        <path d="m 19.32,14.694 c -0.776,0.86 -0.69,1.116 -0.814,2.15 0.806,0.123 1.507,0.24 2.249,0.066 2.38,-1.262 0.075,-3.403 -1.435,-2.216 z"\n              opacity="0.35" id="path1670"/>\n        <path d="m 9.192,22.166 c -0.85,0.408 -0.999,0.96 -1.057,1.475 0.729,0.419 1.877,-0.125 2.041,-1.431 z"\n              opacity="0.3" id="path1672"/>\n        <path d="m 8.19,25.15 c 0,0 0.653,1.137 -1.101,-1.641 0.659,-1.977 8.263,-9.08 12.438,-13.534 L 19.343,6.889 c 0,0 1.069,1.69 1.248,3.468 C 16.2,14.747 8.37,21.19 7.767,23.57 c 0.023,0.674 0.24,1.028 0.423,1.58 z"\n              fill="#ffffff" id="path1674"/>\n        <path d="m 13.26,28.257 c 2.03,-3.337 8.391,-3.224 11.932,-5.242 0.323,0.102 0.13,1.37 0.24,1.23 0.847,-1.09 2.926,-3.28 0.868,-6.875 0.522,5.958 -13.718,5.591 -15.89,10.305 -0.2,0.436 2.182,0.793 2.85,0.582 z"\n              opacity="0.15" id="path1676"/>\n        <path d="M 25.8,23.781 C 24.787,29.594 16.255,29.898 14.812,36.422 17.645,30.016 25.574,30.708 25.8,23.781 Z"\n              fill="#ffffff" id="path1678"/>\n        <path d="m 18.64,6.156 c 0,0 3.051,0.738 4.904,3.982 20.5,7.154 7.642,27.937 5.789,31.073 l 7.203,0.026 C 34.55,37.994 46.084,15.64 24.606,8.98 22.83,7.91 21.837,6.37 18.64,6.155 Z"\n              opacity="0.15" id="path1680"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#f0f0f0" stroke="#1e1e1e" stroke-linejoin="round" stroke-width="1.2" id="path1682"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.503,-0.613 0.887,-0.849 C 15.87,37.783 25,37.734 25,37.734 c 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.592,0.532 0.856,0.87 0.026,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.148 25,37.148 Z"\n              fill="#ffffff" id="path1684"/>\n    </g>\n    <g id="wr" transform="matrix(0.84246687,0,0,0.84246687,-1.0662673,-1.4610091)">\n        <path d="m 17.932,20.414 c 4.906,-0.74 9.579,-0.578 14.136,0 M 14.183,9.662 c -1.06,8.767 1.103,10.677 3.748,10.752 L 14.616,38.573 H 35.383 L 32.067,20.414 c 2.645,-0.074 4.808,-1.985 3.749,-10.752 l -3.608,-0.53 -1.073,3.644 -3.142,-0.1 -0.522,-3.754 h -4.945 l -0.52,3.754 -3.143,0.1 -1.073,-3.643 z"\n              fill="#f0f0f0" stroke-width="1.2" stroke="#1e1e1e" id="path1983"/>\n        <path d="m 17.932,20.414 c 6.828,0 13.118,0.408 14.948,16.572 l 2.319,0.386 -3.131,-16.428 C 32.036,20.636 25.98,19.121 17.932,20.414 Z"\n              opacity="0.15" id="path1985"/>\n        <path d="m 14.777,10.219 2.277,-0.286 c -1.914,0.312 -2.313,5.296 -2.313,5.296 -0.238,-0.177 -0.188,-4.903 0.036,-5.01 z M 25.276,9.55 c -1.648,0 -2.52,2.748 -2.52,2.748 l 0.338,-2.729 z m 7.395,0.266 0.934,0.118 c -0.785,0.5 -1.59,1.989 -1.59,1.989 z m -14.199,11.148 2.62,-0.293 c -2.62,0.293 -4.888,13.113 -4.888,13.113 z"\n              fill="#ffffff" id="path1987"/>\n        <path d="m 34.013,9.398 c 0.357,6.363 -1.95,10.603 -8.041,10.536 l 4.777,0.563 c 7.523,0.31 5.101,-10.806 5.068,-10.835 z"\n              opacity="0.15" id="path1989"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#f0f0f0" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="path1991"/>\n        <path d="m 25,37.146 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.503,-0.613 0.887,-0.849 C 15.87,37.782 25,37.733 25,37.733 c 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.592,0.532 0.856,0.87 0.025,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.135 25,37.147 25,37.147 Z"\n              fill="#ffffff" id="path1993"/>\n    </g>\n    <g id="wp" transform="matrix(0.82029849,0,0,0.82029849,-0.5120331,-0.50721691)">\n        <path d="m 21.503,27.594 h 6.994 M 19,17.508 c 0,1.732 0.712,3.387 1.966,4.587 l -3.65,2.1 0.43,3.399 h 4.306 c -0.794,3.559 -2.755,7.33 -5.062,8.617 -2.307,1.287 -5.3,3.097 -4.843,8.189 h 25.706 c 0.457,-5.092 -2.535,-6.902 -4.842,-8.189 -2.307,-1.286 -4.268,-5.058 -5.062,-8.617 h 4.306 l 0.43,-3.4 -3.65,-2.099 a 6.352,6.352 0 0 0 1.966,-4.587 c 0,-3.367 -2.628,-5.912 -6,-5.912 -3.373,0 -6.002,2.545 -6.001,5.912 z"\n              fill="#f0f0f0" stroke-linejoin="round" stroke-width="1.2" stroke="#1e1e1e" id="path1775"/>\n        <path d="m 24.962,11.537 c 1.17,-0.459 9.527,5.906 0.647,10.773 l 4.512,2.1 -0.562,3.125 h 2.659 l 0.428,-3.399 -3.65,-2.1 c 1.253,-1.2 1.962,-2.58 1.964,-4.312 -0.468,-5.416 -5.998,-6.186 -5.998,-6.186 z m -2.949,15.998 c 4.503,7.934 9.47,9.994 13.074,9.965 L 32.972,36.153 C 30.897,34.663 28.24,31.295 27.91,27.535 Z"\n              opacity="0.15" id="path1777"/>\n        <path d="m 21.983,22.213 -1.647,2.347 -2.356,-0.014 4.013,-2.324 z m 2.324,-9.946 c -2.542,0.138 -5.73,3.173 -4.385,6.918 l 0.199,0.643 c -0.33,-3.489 2.127,-7.116 4.186,-7.561 z m -6.444,25.358 c -3.984,2.305 -5.117,6.14 -5.117,6.14 -0.01,0 -0.548,-4.175 3.956,-6.654 4.504,-2.479 4.822,-6.15 5.86,-8.893 -0.636,3.704 -0.715,7.102 -4.699,9.407 z"\n              fill="#ffffff" id="path1779"/>\n    </g>\n    <g id="bk" transform="matrix(0.78030303,0,0,0.78030303,0.4879357,1.3663636)">\n        <path d="m 27.67,15.225 v -3.544 h 4.44 V 7.252 H 27.175 V 3.36 H 22.81 v 3.893 h -4.934 v 4.43 h 4.44 v 3.543"\n              fill="#5f5955" stroke-linecap="round" stroke-width="1.2" stroke="#010101" id="path848"/>\n        <rect x="20.299" y="14.215" width="9.3979998" height="2.7869999" ry="1.3940001" fill="#5f5955"\n              stroke-linejoin="round" stroke-width="1.2" stroke="#010101" id="rect850"/>\n        <path d="m 26.416,14.215 c 0.725,0 1.308,0.621 1.308,1.393 0,0.773 -0.583,1.394 -1.308,1.394 h 1.974 c 0.724,0 1.308,-0.621 1.308,-1.393 0,-0.773 -0.584,-1.394 -1.308,-1.394 z"\n              opacity="0.18" id="path852"/>\n        <path d="m 21.631,14.842 c -0.402,0 -0.725,0.345 -0.725,0.773 0,0.427 0.323,0.772 0.725,0.772 h 0.874 c -0.402,0 -0.725,-0.345 -0.725,-0.772 0,-0.428 0.323,-0.773 0.725,-0.773 z"\n              fill="#ffffff" opacity="0.25" id="path854"/>\n        <path d="m 33.635,36.986 c 0,0 7.776,-13.318 6.613,-15.916 -1.164,-2.596 -8.48,-4.497 -15.248,-4.497 -6.768,0 -14.084,1.9 -15.248,4.497 -1.164,2.597 6.612,15.916 6.612,15.916 z"\n              fill="#5f5955" stroke-linecap="round" stroke-width="1.2" stroke="#010101" id="path856"/>\n        <path d="m 24.996,16.576 c 15.938,2.622 12.573,9.354 6.64,22.543 l 2.028,-1.729 c 0,0 7.747,-13.723 6.584,-16.32 -1.545,-2.833 -7.503,-4.159 -15.252,-4.494 z"\n              opacity="0.18" id="path858"/>\n        <path d="m 23.765,17.295 c -3.904,-0.184 -14.621,1.801 -13.503,5.017 0.817,3.727 2.754,7.244 4.508,10.504 C 9.083,22.481 8.828,19.042 23.765,17.295 Z M 23.391,3.997 23.375,7.309 h 0.546 l 0.016,-3.312 z m -4.931,3.87 -0.008,3.208 h 0.774 l 0.007,-3.208 z m 4.413,3.213 0.025,2.486 h 0.52 L 23.393,11.08 Z"\n              fill="#ffffff" opacity="0.25" id="path860"/>\n        <path d="m 26.189,3.358 v 3.894 h 0.987 V 3.358 Z m 4.441,3.894 v 4.945 h 1.48 V 7.252 Z m -4.44,4.429 v 2.492 h 1.48 v -2.492 z"\n              opacity="0.18" id="path862"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#5f5955" stroke-linejoin="round" stroke-width="1.2" stroke="#010101" id="path864"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.503,-0.613 0.887,-0.849 2.56,-1.571 11.691,-1.62 11.691,-1.62 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.592,0.532 0.856,0.87 0.025,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.148 25,37.148 Z"\n              fill="#ffffff" opacity="0.25" id="path866"/>\n    </g>\n    <g id="bq" transform="matrix(0.81370661,0,0,0.81370661,-0.34679558,-0.13679747)">\n        <path d="m 24.959,5.094 a 2.958,3.316 90 0 0 -3.316,2.958 2.958,3.316 90 0 0 3.316,2.959 2.958,3.316 90 0 0 3.316,-2.959 2.958,3.316 90 0 0 -3.316,-2.958 z"\n              fill="#5f5955" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" stroke="#010101"\n              id="path1232"/>\n        <path d="M 24.836,5.732 C 24.46,5.522 21.112,6.538 22.651,9.308 22.416,7.763 23.089,6.105 24.836,5.732 Z"\n              fill="#ffffff" opacity="0.25" id="path1234"/>\n        <path d="m 24.959,11.011 c -6.507,0 -9.595,5.884 -9.595,10.358 h 19.263 c 0,-4.474 -3.16,-10.358 -9.668,-10.358 z"\n              fill="#5f5955" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" stroke="#010101"\n              id="path1236"/>\n        <path d="m 18.161,14.977 c 1.042,-1.478 2.92,-3.22 6.84,-3.38 -0.31,0.277 -4.788,1.138 -6.84,3.38 z"\n              fill="#ffffff" opacity="0.25" id="path1238"/>\n        <path d="m 24.836,5.007 c 0,0 0.046,0.238 0,0 2.48,1.129 2.05,3.847 0.817,5.547 7.354,3.803 2.213,8.669 2.212,8.668 h 2.701 c 1.762,1.287 7.209,-2.741 -3.835,-8.67 3.528,-3.115 0.097,-5.606 -1.895,-5.546 z"\n              opacity="0.18" id="path1240"/>\n        <path d="m 25,15.225 c -1.971,0 -2.348,2.65 -4.137,2.86 -1.82,0.213 -3.381,-2.312 -5.25,-1.737 -1.495,0.46 -0.778,2.6 -1.805,3.175 -1.402,0.785 -3.185,-1.832 -5.29,-0.298 6.838,8.829 8.085,12.377 7.983,18.819 h 16.998 c -0.103,-6.443 1.144,-9.99 7.983,-18.82 -2.106,-1.533 -3.889,1.084 -5.29,0.3 -1.027,-0.576 -0.311,-2.716 -1.806,-3.176 -1.868,-0.575 -3.429,1.95 -5.25,1.736 -1.789,-0.21 -2.166,-2.86 -4.137,-2.86 z"\n              fill="#5f5955" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" stroke="#010101"\n              id="path1242"/>\n        <path d="m 9.895,19.34 c -0.136,-0.01 -0.331,0.056 -0.458,0.085 3.081,4.1 6.575,9.537 7.099,12.417 -1.407,-4.933 -3.267,-9.562 -6.14,-12.472 z"\n              fill="#ffffff" opacity="0.25" id="path1244"/>\n        <path d="M 39.974,18.735 C 30.489,28.738 30.05,36.72 23.033,38.045 h 10.476 c -0.103,-6.443 1.145,-9.99 7.983,-18.819 0,0 -0.688,-0.756 -1.518,-0.491 z"\n              opacity="0.18" id="path1246"/>\n        <path d="m 14.912,18.945 c 0.203,-0.088 1.184,-1.808 1.98,-1.95 -1.42,-0.346 -1.618,-0.046 -1.98,1.95 z m 7.599,-1.069 c 0.953,-0.847 1.633,-2.655 3.238,-1.845 -0.798,-0.23 -2.215,1.04 -3.238,1.845 z m 8.609,0.257 c 0.21,0.07 2.176,-1.642 2.862,-1.218 0,0 -1.43,1.12 -2.862,1.218 z"\n              fill="#ffffff" opacity="0.25" id="path1248"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.571 -11.69,-1.62 -11.69,-1.62 z"\n              fill="#5f5955" stroke-linejoin="round" stroke-width="1.2" stroke="#010101" id="path1250"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.502,-0.613 0.887,-0.849 2.56,-1.571 11.691,-1.62 11.691,-1.62 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.593,0.532 0.856,0.87 0.026,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.147 25,37.147 Z"\n              fill="#ffffff" opacity="0.25" id="path1252"/>\n    </g>\n    <g id="bb" transform="matrix(0.20524753,0,0,0.20524753,-31.754618,-4.5982875)">\n        <path d="m 252.1347,51.711857 c -7.95969,0 -14.40756,3.322204 -14.40756,7.419212 l 5.73354,10.015748 C 182.79927,122.40036 221.89092,171.70808 221.89092,171.70808 h 60.49134 c 0,0 26.64567,-32.77606 2.88378,-73.738585 l -11.30079,18.243775 c -2.53228,4.09701 -7.41543,5.6315 -10.94929,3.44315 -3.53386,-2.18456 -4.33512,-7.24535 -1.80283,-11.33858 L 275.90415,84.593747 A 133.72725,133.72725 0 0 0 260.8125,69.150597 l 5.73354,-10.015748 c 0,-4.100788 -6.45165,-7.422992 -14.40756,-7.422992 z"\n              fill="#5f5955" stroke-linejoin="round" stroke-width="4.53543" stroke="#010101" id="path666"/>\n        <path d="m 252.1347,51.711857 c -3.08409,0 -5.93764,0.506456 -8.28094,1.353071 16.39559,3.205039 18.80692,4.23307 9.67559,16.444724 l 12.26834,13.481575 c -13.82173,31.143303 -6.06236,30.202203 -6.06236,30.202203 0,0 2.63055,-10.00819 15.54142,-29.359368 A 134.91402,134.91402 0 0 0 260.8125,69.146817 l 5.72976,-10.015748 c 0,-4.097008 -6.44787,-7.419212 -14.40756,-7.419212 z m 33.12756,46.253858 -3.81354,5.718425 c 14.12409,31.79717 -15.62457,68.02016 -15.62457,68.02016 h 16.55811 c 0.59716,0.1285 26.29795,-33.42614 2.88,-73.738585 z"\n              opacity="0.18" id="path668" style="stroke-width:3.77953"/>\n        <path d="m 214.88746,149.80572 c -0.8315,-0.11717 -12.93733,-36.98646 21.7474,-70.869926 -8.70048,7.162205 -26.96693,49.749926 -21.7474,70.869926 z M 245.67927,68.451384 240.0969,58.64729 c 0,0 0.91465,-2.728819 6.72756,-3.960945 -6.52346,5.102362 -3.73039,6.285354 -1.14519,13.765039 z"\n              fill="#ffffff" opacity="0.25" id="path670" style="stroke-width:3.77953"/>\n        <path d="m 252.1347,167.70556 c 0,0 -34.50709,0.18142 -44.18646,6.12283 -6.52724,4.0063 -8.06929,13.79528 -7.1811,23.89796 h 102.73512 c 0.88819,-10.0989 -0.65008,-19.89544 -7.1811,-23.90174 -9.67559,-5.93385 -44.18268,-6.11905 -44.18268,-6.11905 z"\n              fill="#5f5955" stroke-linejoin="round" stroke-width="4.53543" stroke="#010101" id="path672"/>\n        <path d="m 252.1347,170.31343 c 0,0 -32.92724,-0.51779 -43.93323,6.2967 -1.39842,0.86551 -2.64567,3.1748 -3.60567,5.25354 0.98646,-1.25102 1.89732,-2.31685 3.35244,-3.2126 9.67559,-5.93008 44.18646,-6.1115 44.18646,-6.1115 0,0 34.51465,0.18142 44.19024,6.11906 1.47779,0.90709 2.23748,2.01071 3.23527,3.28819 0.0983,-0.28725 -1.54582,-4.37669 -4.32378,-6.03213 -10.41638,-5.64283 -43.10173,-5.60126 -43.10173,-5.60126 z"\n              fill="#ffffff" opacity="0.25" id="path674" style="stroke-width:3.77953"/>\n    </g>\n    <g id="bn" transform="matrix(0.78338919,0,0,0.78338919,0.92902684,1.1976777)">\n        <path d="m 25.192,23.015 c -0.165,6.967 -11.758,5.219 -11.516,18.104 l 22.86,0.118 C 34.442,34.795 46.226,16.077 24.605,8.979 v 0 c 0,0 -2.438,-2.6 -5.965,-2.823 l 0.222,3.534 -4.558,4.582 c -2.63,3.145 -8.735,8.378 -7.751,9.611 3.115,5.304 6.33,4.432 6.33,4.432 4.242,-4.544 5.82,-2.09 12.31,-5.3 z"\n              fill="#5f5955" stroke="#010101" stroke-linejoin="round" stroke-width="1.2" id="path974"/>\n        <path d="m 19.32,14.694 c -0.776,0.86 -0.69,1.116 -0.814,2.15 0.806,0.123 1.507,0.24 2.249,0.066 2.38,-1.262 0.075,-3.403 -1.435,-2.216 z"\n              opacity="0.4" id="path976"/>\n        <path d="m 9.192,22.166 c -0.85,0.408 -0.999,0.96 -1.057,1.475 0.729,0.419 1.877,-0.125 2.041,-1.431 z"\n              opacity="0.35" id="path978"/>\n        <path d="m 8.19,25.15 c 0,0 0.653,1.137 -1.101,-1.641 0.659,-1.977 8.263,-9.08 12.438,-13.534 L 19.343,6.889 c 0,0 1.069,1.69 1.248,3.468 C 16.2,14.747 8.37,21.19 7.767,23.57 c 0.023,0.674 0.24,1.028 0.423,1.58 z"\n              fill="#ffffff" opacity="0.25" id="path980"/>\n        <path d="m 13.26,28.257 c 2.03,-3.337 8.391,-3.224 11.932,-5.242 0.323,0.102 0.13,1.37 0.24,1.23 0.847,-1.09 2.926,-3.28 0.868,-6.875 0.522,5.958 -13.718,5.591 -15.89,10.305 -0.2,0.436 2.182,0.793 2.85,0.582 z"\n              opacity="0.18" id="path982"/>\n        <path d="M 25.8,23.781 C 24.787,29.594 16.255,29.898 14.812,36.422 17.645,30.016 25.574,30.708 25.8,23.781 Z"\n              fill="#ffffff" opacity="0.25" id="path984"/>\n        <path d="m 18.64,6.156 c 0,0 3.051,0.738 4.904,3.982 20.5,7.154 7.642,27.937 5.789,31.073 l 7.203,0.026 C 34.55,37.994 46.084,15.64 24.606,8.98 22.83,7.91 21.837,6.37 18.64,6.155 Z"\n              opacity="0.18" id="path986"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#5f5955" stroke="#010101" stroke-linejoin="round" stroke-width="1.2" id="path988"/>\n        <path d="m 25,37.147 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.503,-0.613 0.887,-0.849 C 15.87,37.783 25,37.734 25,37.734 c 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.592,0.532 0.856,0.87 0.026,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.136 25,37.148 25,37.148 Z"\n              fill="#ffffff" opacity="0.25" id="path990"/>\n    </g>\n    <g id="br" transform="matrix(0.84246687,0,0,0.84246687,-1.1177673,-1.4608179)">\n        <path d="m 17.932,20.414 c 4.906,-0.74 9.579,-0.578 14.136,0 M 14.183,9.662 c -1.06,8.767 1.103,10.677 3.748,10.752 L 14.616,38.573 H 35.383 L 32.067,20.414 c 2.645,-0.074 4.808,-1.985 3.749,-10.752 l -3.608,-0.53 -1.073,3.644 -3.142,-0.1 -0.522,-3.754 h -4.945 l -0.52,3.754 -3.143,0.1 -1.073,-3.643 z"\n              fill="#5f5955" stroke-width="1.2" stroke="#010101" id="path1359"/>\n        <path d="m 17.932,20.414 c 6.828,0 13.118,0.408 14.948,16.572 l 2.319,0.386 -3.131,-16.428 C 32.036,20.636 25.98,19.121 17.932,20.414 Z"\n              opacity="0.18" id="path1361"/>\n        <path d="m 14.777,10.219 2.277,-0.286 c -1.914,0.312 -2.313,5.296 -2.313,5.296 -0.238,-0.177 -0.188,-4.903 0.036,-5.01 z M 25.276,9.55 c -1.648,0 -2.52,2.748 -2.52,2.748 l 0.338,-2.729 z m 7.395,0.266 0.934,0.118 c -0.785,0.5 -1.59,1.989 -1.59,1.989 z m -14.199,11.148 2.62,-0.293 c -2.62,0.293 -4.895,13.053 -4.906,13.113 z"\n              fill="#ffffff" opacity="0.25" id="path1363"/>\n        <path d="m 34.013,9.398 c 0.357,6.363 -1.95,10.603 -8.041,10.536 l 4.777,0.563 c 7.523,0.31 5.101,-10.806 5.068,-10.835 z"\n              opacity="0.18" id="path1365"/>\n        <path d="m 25,36.457 c 0,0 -9.13,0.048 -11.691,1.62 -1.727,1.06 -2.135,3.65 -1.9,6.323 h 27.182 c 0.235,-2.672 -0.172,-5.264 -1.9,-6.324 -2.56,-1.57 -11.69,-1.619 -11.69,-1.619 z"\n              fill="#5f5955" stroke-linejoin="round" stroke-width="1.2" stroke="#010101" id="path1367"/>\n        <path d="m 25,37.146 c 0,0 -8.712,-0.137 -11.624,1.666 -0.37,0.229 -0.7,0.84 -0.954,1.39 0.261,-0.331 0.503,-0.613 0.887,-0.849 C 15.87,37.782 25,37.733 25,37.733 c 0,0 9.132,0.049 11.692,1.62 0.391,0.24 0.592,0.532 0.856,0.87 0.025,-0.076 -0.409,-1.158 -1.144,-1.596 C 33.648,37.135 25,37.147 25,37.147 Z"\n              fill="#ffffff" opacity="0.25" id="path1369"/>\n    </g>\n    <g id="bp" transform="matrix(0.82029849,0,0,0.82029849,-0.5635331,-0.50702576)">\n        <path d="m 21.503,27.594 h 6.994 M 19,17.508 c 0,1.732 0.712,3.387 1.966,4.587 l -3.65,2.1 0.43,3.399 h 4.306 c -0.794,3.559 -2.755,7.33 -5.062,8.617 -2.307,1.287 -5.3,3.097 -4.843,8.189 h 25.706 c 0.457,-5.092 -2.535,-6.902 -4.842,-8.189 -2.307,-1.286 -4.268,-5.058 -5.062,-8.617 h 4.306 l 0.43,-3.4 -3.65,-2.099 a 6.352,6.352 0 0 0 1.966,-4.587 c 0,-3.367 -2.628,-5.912 -6,-5.912 -3.373,0 -6.002,2.545 -6.001,5.912 z"\n              fill="#5f5955" stroke-linejoin="round" stroke-width="1.2" stroke="#010101" id="path1131"/>\n        <path d="m 24.962,11.537 c 1.17,-0.459 9.527,5.906 0.647,10.773 l 4.512,2.1 -0.562,3.125 h 2.659 l 0.428,-3.399 -3.65,-2.1 c 1.253,-1.2 1.962,-2.58 1.964,-4.312 -0.468,-5.416 -5.998,-6.186 -5.998,-6.186 z m -2.949,15.998 c 4.503,7.934 9.47,9.994 13.074,9.965 L 32.972,36.153 C 30.897,34.663 28.24,31.295 27.91,27.535 Z"\n              opacity="0.18" id="path1133"/>\n        <path d="m 21.983,22.213 -1.647,2.347 -2.356,-0.014 4.013,-2.324 z m 2.324,-9.946 c -2.542,0.138 -5.73,3.173 -4.385,6.918 l 0.199,0.643 c -0.33,-3.489 2.127,-7.116 4.186,-7.561 z m -6.444,25.358 c -3.984,2.305 -5.117,6.14 -5.117,6.14 -0.01,0 -0.548,-4.175 3.956,-6.654 4.504,-2.479 4.822,-6.15 5.86,-8.893 -0.636,3.704 -0.715,7.102 -4.699,9.407 z"\n              fill="#ffffff" opacity="0.25" id="path1135"/>\n    </g>\n</svg>\n';
 const markersRaw = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<!--\nLicense: Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0)\nhttps://creativecommons.org/licenses/by-sa/3.0/\n\nAuthor: shaack (https://shaack.com)\n-->\n\n<svg width="40px" height="40px" viewBox="0 0 40 40" version="1.1" xmlns="http://www.w3.org/2000/svg">\n    <title>cm-chessboard markers</title>\n    <desc>Markers for cm-chessboard (https://shaack.com/projekte/cm-chessboard/)</desc>\n    <g id="markerFrame" transform="translate(2.000000, 2.000000)" fill="#000000" fill-opacity="0">\n        <path d="M2.66453526e-15,10.5882353 L2.66453526e-15,2.11764706 C2.66453526e-15,1.41176471 0.176470588,0.882352941 0.529411765,0.529411765 C0.882352941,0.176470588 1.41176471,-2.84217094e-14 2.11764706,-2.84217094e-14 L10.5882353,-2.84217094e-14" id="Path"/>\n        <path d="M25.4117647,36 L25.4117647,27.5294118 C25.4117647,26.8235294 25.5882353,26.2941176 25.9411765,25.9411765 C26.2941176,25.5882353 26.8235294,25.4117647 27.5294118,25.4117647 L36,25.4117647" id="Path" transform="translate(30.705882, 30.705882) rotate(-180.000000) translate(-30.705882, -30.705882) "/>\n        <path d="M0,36 L0,27.5294118 C0,26.8235294 0.176470588,26.2941176 0.529411765,25.9411765 C0.882352941,25.5882353 1.41176471,25.4117647 2.11764706,25.4117647 L10.5882353,25.4117647" id="Path" transform="translate(5.294118, 30.705882) rotate(-90.000000) translate(-5.294118, -30.705882) "/>\n        <path d="M25.4117647,10.5882353 L25.4117647,2.11764706 C25.4117647,1.41176471 25.5882353,0.882352941 25.9411765,0.529411765 C26.2941176,0.176470588 26.8235294,0 27.5294118,0 L36,0" id="Path" transform="translate(30.705882, 5.294118) rotate(-270.000000) translate(-30.705882, -5.294118) "/>\n    </g>\n    <g id="markerCircle" fill="#000000" fill-opacity="0">\n        <circle cx="20" cy="20" r="18"/>\n    </g>\n    <g id="markerCircleFilled">\n        <circle cx="20" cy="20" r="18"/>\n    </g>\n    <g id="markerDot">\n        <circle cx="20" cy="20" r="7"/>\n    </g>\n    <g id="markerBevel">\n        <path d="M-1.77635684e-15,8.8817842e-16 L9,8.8817842e-16 C7.43502116,0.842866191 5.49543951,2.27321471 3.86541703,3.91660579 C2.21006344,5.58553575 0.86967521,7.47275765 -1.77635684e-15,9 L-1.77635684e-15,8.8817842e-16 Z"/>\n        <path d="M30.9995741,0.000425886354 L40.0194705,0.000425886354 C38.4510319,0.843292078 36.5071624,2.2736406 34.8735365,3.91703168 C33.2145234,5.58596164 31.8711719,7.47318354 30.9995741,9.00042589 L30.9995741,0.000425886354 Z" transform="translate(35.509522, 4.500426) rotate(-270.000000) translate(-35.509522, -4.500426) "/>\n        <path d="M30.9995741,31.0004259 L40.0194705,31.0004259 C38.4510319,31.8432921 36.5071624,33.2736406 34.8735365,34.9170317 C33.2145234,36.5859616 31.8711719,38.4731835 30.9995741,40.0004259 L30.9995741,31.0004259 Z" transform="translate(35.509522, 35.500426) rotate(-180.000000) translate(-35.509522, -35.500426) "/>\n        <path d="M-0.000425886354,31.0004259 L9.01947047,31.0004259 C7.45103192,31.8432921 5.50716243,33.2736406 3.87353645,34.9170317 C2.21452335,36.5859616 0.87117192,38.4731835 -0.000425886354,40.0004259 L-0.000425886354,31.0004259 Z" transform="translate(4.509522, 35.500426) rotate(-90.000000) translate(-4.509522, -35.500426) "/>\n    </g>\n    <g id="markerSquare">\n        <rect x="0" y="0" width="40" height="40"/>\n    </g>\n</svg>\n';
 const arrowsRaw = '<?xml version="1.0" encoding="UTF-8"?>\n<svg width="40px" height="40px" viewBox="0 0 40 40" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">\n    <title>arrows</title>\n    <g id="arrows" stroke="none" fill="none" fill-rule="evenodd" stroke-width="1">\n        <g id="cm-chessboard-arrowheads" transform="translate(5, 1)" fill="#000000">\n            <g id="arrowPointy" fill-rule="nonzero">\n                <path d="M13.5896955,18.4060262 L3.04774642,4.12789972 C2.71970374,3.68359527 2.81395252,3.05748421 3.25825697,2.72944153 C3.58591001,2.48752592 4.02754261,2.46849386 4.37479285,2.68132465 L29.6089137,18.1473987 C30.0797924,18.4360018 30.227556,19.0516834 29.9389529,19.5225621 C29.8565135,19.6570685 29.7434202,19.7701618 29.6089137,19.8526013 L4.37479285,35.3186754 C3.90391418,35.6072784 3.28823259,35.4595148 2.99962954,34.9886362 C2.78679874,34.6413859 2.80583081,34.1997533 3.04774642,33.8721003 L13.5896955,19.5939738 C13.850383,19.2408959 13.850383,18.7591041 13.5896955,18.4060262 Z" id="Path"></path>\n            </g>\n            <g id="arrowDefault" transform="translate(3, 0)" fill-rule="nonzero">\n                <path d="M13.6380471,11.3573439 L23.0265544,19.1369941 C23.4518122,19.4893778 23.5108883,20.1197808 23.1585046,20.5450386 C23.1090352,20.6047384 23.0527907,20.6584826 22.9909045,20.705188 L13.6023972,27.7906743 C13.1615654,28.1233691 12.5344983,28.0357067 12.2018035,27.594875 C12.0708444,27.4213498 12,27.2098744 12,26.9924778 L12,12.1273413 C12,11.5750565 12.4477153,11.1273413 13,11.1273413 C13.2329818,11.1273413 13.4586517,11.2086906 13.6380471,11.3573439 Z" id="Path"></path>\n            </g>\n        </g>\n    </g>\n</svg>';
+const SEVERITY_LABEL = {
+  blunder: "Blunder",
+  mistake: "Mistake",
+  inaccuracy: "Inaccuracy",
+  "missed-win": "Missed win",
+  "missed-draw": "Missed draw"
+};
+const SEVERITY_GLYPH = {
+  blunder: { glyph: "??", cls: "sev-blunder" },
+  "missed-win": { glyph: "??", cls: "sev-blunder" },
+  mistake: { glyph: "?", cls: "sev-mistake" },
+  "missed-draw": { glyph: "?", cls: "sev-mistake" },
+  inaccuracy: { glyph: "?!", cls: "sev-inaccuracy" }
+};
 const PIECE_SPRITES = { standard: piecesStandardRaw, staunty: piecesStauntyRaw };
 function injectSprite(id, svgText, key) {
   let el = document.getElementById(id);
@@ -14003,6 +14078,13 @@ function arrowTypeOf(color) {
     default:
       return ARROW_TYPE$1.warning;
   }
+}
+function squareBadgePosition(square, orientation) {
+  const file2 = square.charCodeAt(0) - 97;
+  const rank2 = parseInt(square[1], 10) - 1;
+  const col = orientation === "white" ? file2 : 7 - file2;
+  const row = orientation === "white" ? 7 - rank2 : rank2;
+  return { left: `${(col + 1) * 12.5}%`, top: `${row * 12.5}%` };
 }
 function Board({
   fen,
@@ -14197,6 +14279,16 @@ function Board({
       "aria-label": `Chess board, ${chess.turn() === "w" ? "white" : "black"} to move`,
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: containerRef, className: "cm-board-container" }),
+        lastMoveSeverity && lastMove && /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
+          {
+            className: `board-severity-badge ${SEVERITY_GLYPH[lastMoveSeverity].cls}`,
+            style: squareBadgePosition(lastMove.to, effOrientation),
+            title: SEVERITY_LABEL[lastMoveSeverity],
+            "aria-hidden": "true",
+            children: SEVERITY_GLYPH[lastMoveSeverity].glyph
+          }
+        ),
         allowFlip && /* @__PURE__ */ jsxRuntimeExports.jsx(
           "button",
           {
@@ -14210,697 +14302,6 @@ function Board({
       ]
     }
   );
-}
-function resultBadge(game) {
-  const r = game.result;
-  let cls = "";
-  let label = r ?? "?";
-  if (r === "1/2-1/2") {
-    cls = "yellow";
-    label = "½–½";
-  } else if (game.userColor === "white" && r === "1-0" || game.userColor === "black" && r === "0-1") {
-    cls = "green";
-    label = "Win";
-  } else if (game.userColor === "white" && r === "0-1" || game.userColor === "black" && r === "1-0") {
-    cls = "red";
-    label = "Loss";
-  }
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${cls}`, children: label });
-}
-const STATUS_BADGE = {
-  none: { cls: "", label: "not analyzed" },
-  queued: { cls: "blue", label: "queued" },
-  running: { cls: "blue", label: "analyzing…" },
-  done: { cls: "green", label: "analyzed" },
-  failed: { cls: "red", label: "failed" }
-};
-function canAnalyze(g) {
-  return !g.ongoing && (g.analysisStatus === "none" || g.analysisStatus === "failed");
-}
-function accuracyCell(g) {
-  if (g.accuracyWhite == null && g.accuracyBlack == null) return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" });
-  if (g.userColor === "white") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyWhite?.toFixed(1) ?? "—" });
-  if (g.userColor === "black") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyBlack?.toFixed(1) ?? "—" });
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "mono muted", children: [
-    "W ",
-    g.accuracyWhite?.toFixed(0) ?? "—",
-    " / B ",
-    g.accuracyBlack?.toFixed(0) ?? "—"
-  ] });
-}
-function Games() {
-  const navigate = useStore((s) => s.navigate);
-  const setImportModalOpen = useStore((s) => s.setImportModalOpen);
-  const [games, setGames] = reactExports.useState([]);
-  const [filters, setFilters] = reactExports.useState({});
-  const [selected, setSelected] = reactExports.useState(null);
-  const [previewFen, setPreviewFen] = reactExports.useState(null);
-  const [error, setError] = reactExports.useState(null);
-  const [checked, setChecked] = reactExports.useState(/* @__PURE__ */ new Set());
-  const [bulkBusy, setBulkBusy] = reactExports.useState(false);
-  const refresh = reactExports.useCallback(() => {
-    void api.games.list(filters).then(setGames);
-  }, [filters]);
-  reactExports.useEffect(refresh, [refresh]);
-  useAppEvent(["games:changed", "job:completed"], refresh);
-  reactExports.useEffect(() => setChecked(/* @__PURE__ */ new Set()), [filters]);
-  reactExports.useEffect(() => {
-    setPreviewFen(null);
-    if (!selected) return;
-    void api.games.moves(selected.id).then((moves) => {
-      setPreviewFen(moves.length ? moves[moves.length - 1].fenAfter : null);
-    });
-  }, [selected]);
-  async function analyzeSelected(game) {
-    setError(null);
-    try {
-      await api.analysis.queue([game.id]);
-    } catch (e) {
-      setError(e.message);
-    }
-  }
-  const analyzable = games.filter(canAnalyze);
-  const allChecked = analyzable.length > 0 && analyzable.every((g) => checked.has(g.id));
-  function toggleSelectAll() {
-    setChecked(allChecked ? /* @__PURE__ */ new Set() : new Set(analyzable.map((g) => g.id)));
-  }
-  function toggleOne(id) {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-  async function bulkAnalyze() {
-    setError(null);
-    setBulkBusy(true);
-    try {
-      await api.analysis.queue([...checked]);
-      setChecked(/* @__PURE__ */ new Set());
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBulkBusy(false);
-    }
-  }
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Games" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Your imported game library. Analyze games to turn mistakes into training." }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 12, flexWrap: "wrap" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "input",
-        {
-          placeholder: "Search opponent / opening…",
-          style: { width: 220 },
-          value: filters.text ?? "",
-          onChange: (e) => setFilters({ ...filters, text: e.target.value || void 0 })
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "select",
-        {
-          value: filters.platform ?? "",
-          onChange: (e) => setFilters({ ...filters, platform: e.target.value || void 0 }),
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "All sources" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "chesscom", children: "Chess.com" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "lichess", children: "Lichess" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "pgn-file", children: "PGN file" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "pasted-pgn", children: "Pasted" })
-          ]
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "select",
-        {
-          value: filters.timeClass ?? "",
-          onChange: (e) => setFilters({ ...filters, timeClass: e.target.value || void 0 }),
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "All speeds" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "bullet", children: "Bullet" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "blitz", children: "Blitz" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "rapid", children: "Rapid" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "classical", children: "Classical" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "daily", children: "Daily" })
-          ]
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "select",
-        {
-          value: filters.result ?? "",
-          onChange: (e) => setFilters({ ...filters, result: e.target.value || void 0 }),
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "All results" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "win", children: "Wins" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "loss", children: "Losses" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "draw", children: "Draws" })
-          ]
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "select",
-        {
-          value: filters.analyzed === void 0 ? "" : String(filters.analyzed),
-          onChange: (e) => setFilters({ ...filters, analyzed: e.target.value === "" ? void 0 : e.target.value === "true" }),
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "Analyzed + not" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "true", children: "Analyzed" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "false", children: "Not analyzed" })
-          ]
-        }
-      )
-    ] }),
-    error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginBottom: 10 }, children: error }),
-    games.length > 0 && analyzable.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 10, justifyContent: "space-between" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: allChecked, onChange: toggleSelectAll }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-          "Select all unanalyzed (",
-          analyzable.length,
-          ")"
-        ] })
-      ] }),
-      checked.size > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", disabled: bulkBusy, onClick: () => void bulkAnalyze(), children: bulkBusy ? "Queuing…" : `Analyze ${checked.size} selected` })
-    ] }),
-    games.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 40 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import your games to build a personalized training plan." }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setImportModalOpen(true), children: "Import games" })
-    ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Date" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "White" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Black" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Result" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Speed" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Mistakes" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Accuracy" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Analysis" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
-        ] }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: games.map((g) => {
-          const st = STATUS_BADGE[g.analysisStatus] ?? STATUS_BADGE.none;
-          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "tr",
-            {
-              className: `clickable ${selected?.id === g.id ? "selected" : ""}`,
-              onClick: () => setSelected(g),
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { onClick: (e) => e.stopPropagation(), children: canAnalyze(g) && /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: checked.has(g.id), onChange: () => toggleOne(g.id) }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: (g.endedAt ?? g.importedAt).slice(0, 10) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  g.whiteName ?? "?",
-                  " ",
-                  g.whiteRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-                    "(",
-                    g.whiteRating,
-                    ")"
-                  ] }) : null
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  g.blackName ?? "?",
-                  " ",
-                  g.blackRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-                    "(",
-                    g.blackRating,
-                    ")"
-                  ] }) : null
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: resultBadge(g) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.timeClass ?? "—" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.openingName ?? g.ecoCode ?? "—" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: g.mistakeCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: g.mistakeCount }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: accuracyCell(g) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${st.cls}`, children: st.label }),
-                  g.ongoing && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge red", style: { marginLeft: 4 }, children: "ongoing" })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4 }, children: g.analysisStatus === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    className: "small primary",
-                    onClick: (e) => {
-                      e.stopPropagation();
-                      navigate({ name: "review", gameId: g.id });
-                    },
-                    children: "Review"
-                  }
-                ) : /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    className: "small",
-                    disabled: g.ongoing || g.analysisStatus === "queued" || g.analysisStatus === "running",
-                    onClick: (e) => {
-                      e.stopPropagation();
-                      void analyzeSelected(g);
-                    },
-                    children: "Analyze"
-                  }
-                ) }) })
-              ]
-            },
-            g.id
-          );
-        }) })
-      ] }) }),
-      selected && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
-          selected.whiteName,
-          " vs ",
-          selected.blackName
-        ] }),
-        previewFen && /* @__PURE__ */ jsxRuntimeExports.jsx(Board, { fen: previewFen, maxWidth: 268, showCoordinates: false, evalTarget: false, allowFlip: false }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { gap: 4, marginTop: 10 }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
-            selected.timeControl ?? "",
-            " · ",
-            selected.plyCount,
-            " plies"
-          ] }),
-          selected.sourceGameUrl && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted mono", style: { fontSize: 11, wordBreak: "break-all" }, children: selected.sourceGameUrl }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 6, flexWrap: "wrap" }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => navigate({ name: "review", gameId: selected.id }), children: "Open review" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => void api.games.exportPgn([selected.id]), children: "Export PGN" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "button",
-              {
-                className: "small danger",
-                onClick: () => {
-                  if (!window.confirm(`Delete this game (${selected.whiteName} vs ${selected.blackName})? This also removes its analysis, mistakes, and exercises. This cannot be undone.`)) return;
-                  void api.games.delete(selected.id).then(() => setSelected(null));
-                },
-                children: "Delete"
-              }
-            )
-          ] })
-        ] })
-      ] })
-    ] })
-  ] });
-}
-const SEVERITY_LABEL = {
-  blunder: "Blunder",
-  mistake: "Mistake",
-  inaccuracy: "Inaccuracy",
-  "missed-win": "Missed win",
-  "missed-draw": "Missed draw"
-};
-const SEVERITY_GLYPH = {
-  blunder: { glyph: "??", cls: "sev-blunder" },
-  "missed-win": { glyph: "??", cls: "sev-blunder" },
-  mistake: { glyph: "?", cls: "sev-mistake" },
-  "missed-draw": { glyph: "?", cls: "sev-mistake" },
-  inaccuracy: { glyph: "?!", cls: "sev-inaccuracy" }
-};
-function whiteCp(a) {
-  const best = a.multiPv[0];
-  if (!best) return 0;
-  let cp = best.score.type === "mate" ? best.score.value > 0 ? 1e3 : -1e3 : best.score.value;
-  if (a.sideToMove === "b") cp = -cp;
-  return Math.max(-800, Math.min(800, cp));
-}
-function whitePct(a) {
-  if (!a) return 50;
-  const cp = whiteCp(a);
-  return 50 + 50 * (2 / (1 + Math.exp(-cp / 400)) - 1);
-}
-function EvalGraph({
-  analyses,
-  mistakes,
-  currentPly,
-  onSelect
-}) {
-  const width = 800;
-  const height = 140;
-  const n = analyses.length;
-  if (n < 2) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No evaluation data." });
-  const yOf = (a) => height / 2 - whiteCp(a) / 800 * (height / 2 - 6);
-  const xOf = (i) => i / (n - 1) * width;
-  const points = analyses.map((a, i) => `${xOf(i).toFixed(1)},${yOf(a).toFixed(1)}`);
-  const areaPoints = [`0,${height / 2}`, ...points, `${width},${height / 2}`].join(" ");
-  const cursorX = xOf(currentPly);
-  const dots = mistakes.map((m) => {
-    const idx = analyses.findIndex((a) => a.ply === m.ply);
-    if (idx < 0) return null;
-    const sev = SEVERITY_GLYPH[m.severity];
-    const color = sev.cls === "sev-blunder" ? "var(--danger)" : sev.cls === "sev-mistake" ? "var(--warn)" : "var(--info)";
-    return { x: xOf(idx), y: yOf(analyses[idx]), color, m };
-  }).filter((d) => d !== null);
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
-    "svg",
-    {
-      className: "eval-graph",
-      viewBox: `0 0 ${width} ${height}`,
-      preserveAspectRatio: "none",
-      onClick: (e) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const frac = (e.clientX - rect.left) / rect.width;
-        onSelect(Math.round(frac * (n - 1)));
-      },
-      style: { cursor: "pointer" },
-      children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: 0, y1: height / 2, x2: width, y2: height / 2, stroke: "var(--border)", strokeWidth: 1 }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("polygon", { points: areaPoints, fill: "var(--info)", opacity: 0.16, stroke: "none" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: points.join(" "), fill: "none", stroke: "var(--info)", strokeWidth: 2 }),
-        dots.map((d, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: d.x, cy: d.y, r: 4.5, fill: d.color, stroke: "var(--bg-raised)", strokeWidth: 1.5, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("title", { children: [
-          "Move ",
-          Math.ceil(d.m.ply / 2),
-          " · ",
-          SEVERITY_LABEL[d.m.severity]
-        ] }) }, i)),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: cursorX, y1: 0, x2: cursorX, y2: height, stroke: "var(--accent)", strokeWidth: 2 })
-      ]
-    }
-  );
-}
-function AccuracySummary({ game, mistakes }) {
-  if (game.accuracyWhite == null && game.accuracyBlack == null) return null;
-  const counts = {};
-  for (const m of mistakes) counts[m.severity] = (counts[m.severity] ?? 0) + 1;
-  const summaryBits = [];
-  if (counts.blunder || counts["missed-win"]) summaryBits.push(`${(counts.blunder ?? 0) + (counts["missed-win"] ?? 0)} blunder(s)`);
-  if (counts.mistake || counts["missed-draw"]) summaryBits.push(`${(counts.mistake ?? 0) + (counts["missed-draw"] ?? 0)} mistake(s)`);
-  if (counts.inaccuracy) summaryBits.push(`${counts.inaccuracy} inaccuracy(-ies)`);
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { marginBottom: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "accuracy-row", children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "accuracy-pill", children: game.accuracyWhite != null ? game.accuracyWhite.toFixed(1) : "—" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "White accuracy" })
-    ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "accuracy-pill", children: game.accuracyBlack != null ? game.accuracyBlack.toFixed(1) : "—" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Black accuracy" })
-    ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: summaryBits.length > 0 ? summaryBits.join(" · ") : "No flagged mistakes" })
-  ] }) });
-}
-function Review({ gameId }) {
-  const navigate = useStore((s) => s.navigate);
-  const [game, setGame] = reactExports.useState(null);
-  const [moves, setMoves] = reactExports.useState([]);
-  const [analyses, setAnalyses] = reactExports.useState([]);
-  const [mistakes, setMistakes] = reactExports.useState([]);
-  const [currentPly, setCurrentPly] = reactExports.useState(0);
-  const [revealed, setRevealed] = reactExports.useState(false);
-  const [notice, setNotice] = reactExports.useState(null);
-  const [tryMode, setTryMode] = reactExports.useState(false);
-  const [tryFeedback, setTryFeedback] = reactExports.useState(null);
-  const [autoplay, setAutoplay] = reactExports.useState(false);
-  reactExports.useEffect(() => {
-    void api.games.get(gameId).then(setGame);
-    void api.games.moves(gameId).then(setMoves);
-    void api.analysis.forGame(gameId).then(setAnalyses);
-    void api.analysis.mistakes(gameId).then(setMistakes);
-  }, [gameId]);
-  reactExports.useEffect(() => {
-    const handler = (e) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "ArrowLeft") setCurrentPly((p) => Math.max(0, p - 1));
-      if (e.key === "ArrowRight") setCurrentPly((p) => Math.min(moves.length, p + 1));
-      if (e.key === "Home") setCurrentPly(0);
-      if (e.key === "End") setCurrentPly(moves.length);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [moves.length]);
-  reactExports.useEffect(() => {
-    setRevealed(false);
-    setTryMode(false);
-    setTryFeedback(null);
-  }, [currentPly]);
-  reactExports.useEffect(() => {
-    if (!autoplay) return;
-    if (currentPly >= moves.length) {
-      setAutoplay(false);
-      return;
-    }
-    const t = setTimeout(() => setCurrentPly((p) => Math.min(moves.length, p + 1)), 900);
-    return () => clearTimeout(t);
-  }, [autoplay, currentPly, moves.length]);
-  const mistakeByPly = reactExports.useMemo(() => new Map(mistakes.map((m) => [m.ply, m])), [mistakes]);
-  const analysisByPly = reactExports.useMemo(() => new Map(analyses.map((a) => [a.ply, a])), [analyses]);
-  if (!game) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
-  const fen = currentPly === 0 ? moves[0]?.fenBefore ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" : moves[currentPly - 1].fenAfter;
-  const lastMove = currentPly > 0 ? { from: moves[currentPly - 1].uci.slice(0, 2), to: moves[currentPly - 1].uci.slice(2, 4) } : null;
-  const orientation = game.userColor === "black" ? "black" : "white";
-  const mistakeHere = mistakeByPly.get(currentPly);
-  const upcomingMistake = mistakeByPly.get(currentPly + 1);
-  const positionAnalysis = analysisByPly.get(currentPly);
-  const bestHere = positionAnalysis?.multiPv[0];
-  const playedNext = upcomingMistake && revealed ? moves[currentPly] : null;
-  const boardArrows = playedNext ? [
-    { from: playedNext.uci.slice(0, 2), to: playedNext.uci.slice(2, 4), color: "red" },
-    ...upcomingMistake.betterMoveUci ? [
-      {
-        from: upcomingMistake.betterMoveUci.slice(0, 2),
-        to: upcomingMistake.betterMoveUci.slice(2, 4),
-        color: "green"
-      }
-    ] : []
-  ] : [];
-  function jumpToMistake(direction) {
-    if (direction === 1) {
-      const next = mistakes.find((m) => m.ply > currentPly);
-      if (next) setCurrentPly(next.ply);
-    } else {
-      const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly);
-      if (prevMs) setCurrentPly(prevMs.ply);
-    }
-  }
-  function handleTryMove(uci, san) {
-    if (!upcomingMistake) return;
-    if (uci === upcomingMistake.betterMoveUci) {
-      setTryFeedback(`✓ Correct — ${san} was the engine's top choice.`);
-      setRevealed(true);
-      setTryMode(false);
-    } else {
-      setTryFeedback(`${san} isn't the engine's top choice. Try again, or reveal what happened.`);
-    }
-  }
-  async function createExercise(m) {
-    try {
-      await api.exercises.fromMistake(m.id);
-      setNotice("Exercise created — it will appear in Exercises, due today.");
-    } catch (e) {
-      setNotice(e.message);
-    }
-  }
-  async function addLineToRepertoire(uptoPly) {
-    try {
-      const nodes = await api.repertoire.addLineFromGame(gameId, uptoPly);
-      setNotice(`Added ${nodes.length} of your moves to the ${orientation} repertoire.`);
-    } catch (e) {
-      setNotice(e.message);
-    }
-  }
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", marginBottom: 8 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("h1", { children: [
-          game.whiteName,
-          " vs ",
-          game.blackName,
-          " ",
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", style: { fontSize: 14 }, children: [
-            game.result,
-            " · ",
-            game.timeClass ?? ""
-          ] })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: game.openingName ?? game.ecoCode ?? "" })
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => navigate({ name: "games" }), children: "← Games" })
-    ] }),
-    analyses.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout warn", style: { marginBottom: 12 }, children: "This game has no engine analysis yet. Queue it from the Games screen to see mistakes and coaching." }),
-    analyses.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(AccuracySummary, { game, mistakes }),
-    notice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout", style: { marginBottom: 12 }, children: notice }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 16 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 230, flexShrink: 0, maxHeight: 560, overflowY: "auto" }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Moves" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "move-list", children: moves.map((m) => {
-          const mk = mistakeByPly.get(m.ply);
-          const before = analysisByPly.get(m.ply - 1);
-          const isBest = !mk && before?.multiPv[0]?.moveUci === m.uci;
-          const glyph = mk ? SEVERITY_GLYPH[mk.severity] : isBest ? { glyph: "✓", cls: "sev-best" } : null;
-          return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-            m.color === "white" && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "num", children: [
-              m.moveNumber,
-              "."
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "span",
-              {
-                className: `mv ${currentPly === m.ply ? "current" : ""} ${mk ? mk.severity.replace("missed-win", "blunder").replace("missed-draw", "blunder") : ""}`,
-                onClick: () => setCurrentPly(m.ply),
-                title: mk ? SEVERITY_LABEL[mk.severity] : isBest ? "Best move" : void 0,
-                children: [
-                  m.san,
-                  glyph && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `mv-glyph ${glyph.cls}`, children: glyph.glyph })
-                ]
-              }
-            )
-          ] }, m.ply);
-        }) })
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: "0 1 520px", minWidth: 320 }, children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 8 }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "div",
-            {
-              className: "eval-bar-vert-outer",
-              style: { height: "min(52vh, 480px)" },
-              title: "Static eval from stored analysis (White ↔ Black)",
-              children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-vert-white", style: { height: `${whitePct(positionAnalysis)}%` } })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-            Board,
-            {
-              fen,
-              orientation,
-              interactive: tryMode,
-              onMove: tryMode ? handleTryMove : void 0,
-              lastMove,
-              lastMoveSeverity: mistakeHere?.severity ?? null,
-              arrows: boardArrows,
-              maxWidth: 500
-            }
-          ) })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 8, justifyContent: "center", flexWrap: "wrap" }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(0), children: "⏮" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.max(0, currentPly - 1)), children: "◀" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "small",
-              title: "Previous critical moment",
-              disabled: !mistakes.some((m) => m.ply < currentPly),
-              onClick: () => jumpToMistake(-1),
-              children: "⏴!"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", style: { minWidth: 90, textAlign: "center" }, children: [
-            "Move ",
-            currentPly,
-            "/",
-            moves.length
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "small",
-              title: "Next critical moment",
-              disabled: !mistakes.some((m) => m.ply > currentPly),
-              onClick: () => jumpToMistake(1),
-              children: "!⏵"
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.min(moves.length, currentPly + 1)), children: "▶" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(moves.length), children: "⏭" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${autoplay ? "primary" : ""}`, onClick: () => setAutoplay((a) => !a), children: autoplay ? "⏸ Pause" : "▶ Autoplay" })
-        ] }),
-        analyses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(EvalGraph, { analyses, mistakes, currentPly, onSelect: setCurrentPly }) })
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 260 }, children: [
-        upcomingMistake && !revealed && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Critical moment ahead" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { children: [
-            upcomingMistake.severity === "blunder" ? "This was the critical mistake in your game." : "You went wrong on the next move.",
-            " ",
-            "Before revealing: find your candidate moves. What is forcing? What changed after the last move?"
-          ] }),
-          tryFeedback && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `callout ${tryFeedback.startsWith("✓") ? "success" : "warn"}`, style: { marginBottom: 8 }, children: tryFeedback }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
-            !tryMode && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setTryMode(true), children: "Try it on the board" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setRevealed(true), children: "Compare with what happened" })
-          ] })
-        ] }),
-        mistakeHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${mistakeHere.severity === "inaccuracy" ? "blue" : mistakeHere.severity === "mistake" ? "yellow" : "red"}`, children: SEVERITY_LABEL[mistakeHere.severity] }),
-            " ",
-            "Move ",
-            Math.ceil(mistakeHere.ply / 2)
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: mistakeHere.humanSummary }),
-          mistakeHere.whyBad && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: mistakeHere.whyBad }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginBottom: 8 }, children: [
-            "Better: ",
-            /* @__PURE__ */ jsxRuntimeExports.jsx("b", { className: "mono", children: mistakeHere.betterMoveSan ?? mistakeHere.betterMoveUci }),
-            mistakeHere.evalLossCp != null && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-              " · cost ≈ ",
-              (mistakeHere.evalLossCp / 100).toFixed(1),
-              " pawns"
-            ] }),
-            " · ",
-            "confidence: ",
-            mistakeHere.confidence
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => void createExercise(mistakeHere), children: "Create exercise" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(mistakeHere.ply - 1), children: "Go to position before" })
-          ] })
-        ] }),
-        (revealed || mistakeHere || !upcomingMistake) && bestHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "What the engine saw" }),
-          positionAnalysis.multiPv.slice(0, 3).map((pv) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginBottom: 4 }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("b", { className: "mono", children: pv.moveSan ?? pv.moveUci }),
-            " ",
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: pv.score.type === "mate" ? `#${pv.score.value}` : (pv.score.value / 100).toFixed(2) }),
-            " ",
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11 }, children: (pv.pvSan ?? pv.pvUci).slice(0, 6).join(" ") })
-          ] }, pv.rank)),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { fontSize: 11 }, children: [
-            "depth ",
-            positionAnalysis.depth ?? "?",
-            " · engine is a verifier, not the teacher"
-          ] })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Turn this into training" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { flexWrap: "wrap" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "small",
-              disabled: currentPly === 0,
-              onClick: () => void addLineToRepertoire(Math.min(currentPly, 20)),
-              children: "Add opening line to repertoire"
-            }
-          ) })
-        ] }),
-        mistakes.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { maxHeight: 240, overflowY: "auto" }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
-            "Critical moments (",
-            mistakes.length,
-            ")"
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: mistakes.map((m) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "div",
-            {
-              className: "row",
-              style: { justifyContent: "space-between", cursor: "pointer" },
-              onClick: () => setCurrentPly(m.ply),
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-                  "Move ",
-                  Math.ceil(m.ply / 2),
-                  " ·",
-                  " ",
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${m.severity === "inaccuracy" ? "blue" : m.severity === "mistake" ? "yellow" : "red"}`, children: SEVERITY_LABEL[m.severity] })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted mono", children: m.betterMoveSan })
-              ]
-            },
-            m.id
-          )) })
-        ] })
-      ] })
-    ] })
-  ] });
 }
 const OPENINGS = [
   {
@@ -15176,10 +14577,1424 @@ const OPENINGS = [
     ]
   }
 ];
+const RANGES = [
+  { from: "A00", to: "A39", name: "Flank opening" },
+  { from: "A40", to: "A44", name: "Queen's Pawn Game" },
+  { from: "A45", to: "A49", name: "Indian Defense" },
+  { from: "A50", to: "A79", name: "Benoni / Indian Defense" },
+  { from: "A80", to: "A99", name: "Dutch Defense" },
+  { from: "B00", to: "B19", name: "Uncommon King's Pawn Defense" },
+  { from: "B20", to: "B99", name: "Sicilian Defense" },
+  { from: "C00", to: "C19", name: "French Defense" },
+  { from: "C20", to: "C29", name: "King's Pawn Game" },
+  { from: "C30", to: "C39", name: "King's Gambit" },
+  { from: "C40", to: "C49", name: "Open Game" },
+  { from: "C50", to: "C59", name: "Italian Game" },
+  { from: "C60", to: "C99", name: "Ruy Lopez (Spanish)" },
+  { from: "D00", to: "D05", name: "Queen's Pawn Game" },
+  { from: "D06", to: "D69", name: "Queen's Gambit" },
+  { from: "D70", to: "D99", name: "Grünfeld Defense" },
+  { from: "E00", to: "E09", name: "Catalan Opening" },
+  { from: "E10", to: "E59", name: "Nimzo-Indian / Bogo-Indian" },
+  { from: "E60", to: "E99", name: "King's Indian Defense" }
+];
+const EXACT = new Map(OPENINGS.map((o) => [o.eco, o.name]));
+function ecoFamilyName(eco) {
+  const code = eco.trim().toUpperCase();
+  if (!/^[A-E]\d{2}$/.test(code)) return null;
+  const exact = EXACT.get(code);
+  if (exact) return exact;
+  const range = RANGES.find((r) => code >= r.from && code <= r.to);
+  return range?.name ?? null;
+}
+function openingLabel(game) {
+  if (game.openingName) return game.openingName;
+  if (game.ecoCode) return ecoFamilyName(game.ecoCode) ?? game.ecoCode;
+  return "—";
+}
+function resultBadge(game) {
+  const r = game.result;
+  let cls = "";
+  let label = r ?? "?";
+  if (r === "1/2-1/2") {
+    cls = "yellow";
+    label = "½–½";
+  } else if (game.userColor === "white" && r === "1-0" || game.userColor === "black" && r === "0-1") {
+    cls = "green";
+    label = "Win";
+  } else if (game.userColor === "white" && r === "0-1" || game.userColor === "black" && r === "1-0") {
+    cls = "red";
+    label = "Loss";
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${cls}`, children: label });
+}
+const STATUS_BADGE = {
+  none: { cls: "", label: "not analyzed" },
+  queued: { cls: "blue", label: "queued" },
+  running: { cls: "blue", label: "analyzing…" },
+  done: { cls: "green", label: "analyzed" },
+  failed: { cls: "red", label: "failed" }
+};
+function canAnalyze(g) {
+  return !g.ongoing && (g.analysisStatus === "none" || g.analysisStatus === "failed");
+}
+function outcomeRank(g) {
+  if (!g.result) return -1;
+  if (g.result === "1/2-1/2") return 1;
+  if (g.userColor === "white" && g.result === "1-0" || g.userColor === "black" && g.result === "0-1") return 2;
+  if (g.userColor === "white" && g.result === "0-1" || g.userColor === "black" && g.result === "1-0") return 0;
+  return -1;
+}
+function userAccuracy(g) {
+  if (g.userColor === "white") return g.accuracyWhite;
+  if (g.userColor === "black") return g.accuracyBlack;
+  return null;
+}
+const PAGE_SIZE = 200;
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort
+}) {
+  const active = sort?.key === sortKey;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("th", { className: "clickable", style: { cursor: "pointer", userSelect: "none" }, onClick: () => onSort(sortKey), children: [
+    label,
+    active && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginLeft: 3 }, children: sort.dir === 1 ? "▲" : "▼" })
+  ] });
+}
+function accuracyCell(g) {
+  if (g.accuracyWhite == null && g.accuracyBlack == null) return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" });
+  if (g.userColor === "white") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyWhite != null ? `${g.accuracyWhite.toFixed(1)}%` : "—" });
+  if (g.userColor === "black") return /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: g.accuracyBlack != null ? `${g.accuracyBlack.toFixed(1)}%` : "—" });
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "mono muted", children: [
+    "W ",
+    g.accuracyWhite != null ? `${g.accuracyWhite.toFixed(0)}%` : "—",
+    " / B ",
+    g.accuracyBlack != null ? `${g.accuracyBlack.toFixed(0)}%` : "—"
+  ] });
+}
+function Games({ initialText }) {
+  const navigate = useStore((s) => s.navigate);
+  const setImportModalOpen = useStore((s) => s.setImportModalOpen);
+  const [games, setGames] = reactExports.useState([]);
+  const [filters, setFilters] = reactExports.useState(initialText ? { text: initialText } : {});
+  const [limit, setLimit] = reactExports.useState(PAGE_SIZE);
+  const [selected, setSelected] = reactExports.useState(null);
+  const [previewFen, setPreviewFen] = reactExports.useState(null);
+  const [error, setError] = reactExports.useState(null);
+  const [checked, setChecked] = reactExports.useState(/* @__PURE__ */ new Set());
+  const [bulkBusy, setBulkBusy] = reactExports.useState(false);
+  const [sort, setSort] = reactExports.useState(null);
+  const refresh = reactExports.useCallback(() => {
+    void api.games.list({ ...filters, limit }).then(setGames);
+  }, [filters, limit]);
+  reactExports.useEffect(refresh, [refresh]);
+  useAppEvent(["games:changed", "job:completed"], refresh);
+  reactExports.useEffect(() => setChecked(/* @__PURE__ */ new Set()), [filters]);
+  reactExports.useEffect(() => setLimit(PAGE_SIZE), [filters]);
+  function toggleSort(key) {
+    setSort((prev) => prev?.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: key === "date" ? -1 : -1 });
+  }
+  const sortedGames = reactExports.useMemo(() => {
+    if (!sort) return games;
+    const dir = sort.dir;
+    const valueOf = (g) => {
+      switch (sort.key) {
+        case "date":
+          return g.endedAt ?? g.importedAt;
+        case "result":
+          return outcomeRank(g);
+        case "mistakes":
+          return g.mistakeCount;
+        case "accuracy":
+          return userAccuracy(g) ?? -1;
+      }
+    };
+    return [...games].sort((a, b) => {
+      const va = valueOf(a);
+      const vb = valueOf(b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+  }, [games, sort]);
+  reactExports.useEffect(() => {
+    setPreviewFen(null);
+    if (!selected) return;
+    void api.games.moves(selected.id).then((moves) => {
+      setPreviewFen(moves.length ? moves[moves.length - 1].fenAfter : null);
+    });
+  }, [selected]);
+  async function analyzeSelected(game) {
+    setError(null);
+    try {
+      await api.analysis.queue([game.id]);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  const analyzable = games.filter(canAnalyze);
+  const allChecked = analyzable.length > 0 && analyzable.every((g) => checked.has(g.id));
+  function toggleSelectAll() {
+    setChecked(allChecked ? /* @__PURE__ */ new Set() : new Set(analyzable.map((g) => g.id)));
+  }
+  function toggleOne(id) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  async function bulkAnalyze() {
+    setError(null);
+    setBulkBusy(true);
+    try {
+      await api.analysis.queue([...checked]);
+      setChecked(/* @__PURE__ */ new Set());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Games" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Your imported game library. Analyze games to turn mistakes into training." }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 12, flexWrap: "wrap" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "input",
+        {
+          placeholder: "Search opponent / opening…",
+          style: { width: 220 },
+          value: filters.text ?? "",
+          onChange: (e) => setFilters({ ...filters, text: e.target.value || void 0 })
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "select",
+        {
+          value: filters.platform ?? "",
+          onChange: (e) => setFilters({ ...filters, platform: e.target.value || void 0 }),
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "All sources" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "chesscom", children: "Chess.com" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "lichess", children: "Lichess" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "pgn-file", children: "PGN file" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "pasted-pgn", children: "Pasted" })
+          ]
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "select",
+        {
+          value: filters.timeClass ?? "",
+          onChange: (e) => setFilters({ ...filters, timeClass: e.target.value || void 0 }),
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "All speeds" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "bullet", children: "Bullet" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "blitz", children: "Blitz" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "rapid", children: "Rapid" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "classical", children: "Classical" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "daily", children: "Daily" })
+          ]
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "select",
+        {
+          value: filters.result ?? "",
+          onChange: (e) => setFilters({ ...filters, result: e.target.value || void 0 }),
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "All results" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "win", children: "Wins" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "loss", children: "Losses" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "draw", children: "Draws" })
+          ]
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+        "select",
+        {
+          value: filters.analyzed === void 0 ? "" : String(filters.analyzed),
+          onChange: (e) => setFilters({ ...filters, analyzed: e.target.value === "" ? void 0 : e.target.value === "true" }),
+          children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "", children: "Analyzed + not" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "true", children: "Analyzed" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "false", children: "Not analyzed" })
+          ]
+        }
+      )
+    ] }),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginBottom: 10 }, children: error }),
+    games.length > 0 && analyzable.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 10, justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: allChecked, onChange: toggleSelectAll }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+          "Select all unanalyzed (",
+          analyzable.length,
+          ")"
+        ] })
+      ] }),
+      checked.size > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", disabled: bulkBusy, onClick: () => void bulkAnalyze(), children: bulkBusy ? "Queuing…" : `Analyze ${checked.size} selected` })
+    ] }),
+    games.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 40 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import your games to build a personalized training plan." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setImportModalOpen(true), children: "Import games" })
+    ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, minWidth: 0 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", {}),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Date", sortKey: "date", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "White" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Black" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Result", sortKey: "result", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Speed" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Mistakes", sortKey: "mistakes", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(SortableHeader, { label: "Accuracy", sortKey: "accuracy", sort, onSort: toggleSort }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Analysis" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: sortedGames.map((g) => {
+            const st = STATUS_BADGE[g.analysisStatus] ?? STATUS_BADGE.none;
+            return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "tr",
+              {
+                className: `clickable ${selected?.id === g.id ? "selected" : ""}`,
+                onClick: () => setSelected(g),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { onClick: (e) => e.stopPropagation(), children: canAnalyze(g) && /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "checkbox", checked: checked.has(g.id), onChange: () => toggleOne(g.id) }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: (g.endedAt ?? g.importedAt).slice(0, 10) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                    g.whiteName ?? "?",
+                    " ",
+                    g.whiteRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                      "(",
+                      g.whiteRating,
+                      ")"
+                    ] }) : null
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                    g.blackName ?? "?",
+                    " ",
+                    g.blackRating ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                      "(",
+                      g.blackRating,
+                      ")"
+                    ] }) : null
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: resultBadge(g) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: g.timeClass ?? "—" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", title: g.ecoCode ?? void 0, children: openingLabel(g) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: g.mistakeCount > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge yellow", children: g.mistakeCount }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: accuracyCell(g) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${st.cls}`, children: st.label }),
+                    g.ongoing && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge red", style: { marginLeft: 4 }, children: "ongoing" })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4 }, children: g.analysisStatus === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      className: "small primary",
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        navigate({ name: "review", gameId: g.id });
+                      },
+                      children: "Review"
+                    }
+                  ) : /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      className: "small",
+                      disabled: g.ongoing || g.analysisStatus === "queued" || g.analysisStatus === "running",
+                      onClick: (e) => {
+                        e.stopPropagation();
+                        void analyzeSelected(g);
+                      },
+                      children: "Analyze"
+                    }
+                  ) }) })
+                ]
+              },
+              g.id
+            );
+          }) })
+        ] }),
+        games.length >= limit && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "center", marginTop: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setLimit((l) => l + PAGE_SIZE), children: "Show more" }) })
+      ] }),
+      selected && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
+          selected.whiteName,
+          " vs ",
+          selected.blackName
+        ] }),
+        previewFen && /* @__PURE__ */ jsxRuntimeExports.jsx(Board, { fen: previewFen, maxWidth: 268, showCoordinates: false, evalTarget: false, allowFlip: false }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { gap: 4, marginTop: 10 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
+            selected.timeControl ?? "",
+            " · ",
+            selected.plyCount,
+            " plies"
+          ] }),
+          selected.sourceGameUrl && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted mono", style: { fontSize: 11, wordBreak: "break-all" }, children: selected.sourceGameUrl }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 6, flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => navigate({ name: "review", gameId: selected.id }), children: "Open review" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => void api.games.exportPgn([selected.id]), children: "Export PGN" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "small danger",
+                onClick: () => {
+                  if (!window.confirm(`Delete this game (${selected.whiteName} vs ${selected.blackName})? This also removes its analysis, mistakes, and exercises. This cannot be undone.`)) return;
+                  void api.games.delete(selected.id).then(() => setSelected(null));
+                },
+                children: "Delete"
+              }
+            )
+          ] })
+        ] })
+      ] })
+    ] })
+  ] });
+}
+const TIME_CLASS_LABEL = {
+  bullet: "Bullet",
+  blitz: "Blitz",
+  rapid: "Rapid",
+  classical: "Classical",
+  daily: "Daily",
+  unknown: "Other"
+};
+const WEAKNESS_LABEL = {
+  tactics: "Tactical awareness",
+  opening: "Opening preparation",
+  endgame: "Endgame technique",
+  calculation: "Calculation depth",
+  strategy: "Strategic judgment",
+  "time-management": "Time management"
+};
+function impactBadgeClass(impact) {
+  return impact === "high" ? "red" : impact === "medium" ? "yellow" : "blue";
+}
+function CoachReportCard() {
+  const settings = useStore((s) => s.settings);
+  const navigate = useStore((s) => s.navigate);
+  const aiConfigured = settings != null && settings.aiConfig.mode !== "manual";
+  const [report, setReport] = reactExports.useState(null);
+  const [loading, setLoading] = reactExports.useState(false);
+  const [error, setError] = reactExports.useState(null);
+  reactExports.useEffect(() => {
+    void api.ai.coachReport.latest().then(setReport);
+  }, []);
+  async function generate() {
+    setLoading(true);
+    setError(null);
+    try {
+      setReport(await api.ai.coachReport.generate());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", alignItems: "flex-start" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { style: { margin: 0 }, children: "🤖 Coach report" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { margin: "4px 0 0" }, children: "A cross-game weakness diagnosis and 7-day plan, built from your recently analyzed games." })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          className: "small primary",
+          disabled: !aiConfigured || loading,
+          title: !aiConfigured ? "Configure an AI provider in Settings first" : void 0,
+          onClick: () => void generate(),
+          children: loading ? "Generating…" : report ? "Refresh" : "Generate coach report"
+        }
+      )
+    ] }),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginTop: 10 }, children: error }),
+    !aiConfigured && !report && /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "muted", style: { marginTop: 10, marginBottom: 0 }, children: [
+      "Configure an AI provider in",
+      " ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => navigate({ name: "settings" }), children: "Settings" }),
+      " ",
+      "to unlock coach reports."
+    ] }),
+    report && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginTop: 10 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { marginTop: 0 }, children: report.summary }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { fontSize: 12, marginBottom: 12 }, children: [
+        "Based on ",
+        report.gamesConsidered,
+        " recently analyzed game(s) · generated ",
+        report.createdAt.slice(0, 10)
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 12 }, children: report.topWeaknesses.map((w) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 8, alignItems: "center" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${impactBadgeClass(w.impact)}`, children: w.impact }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: WEAKNESS_LABEL[w.tag] ?? w.tag })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { margin: "4px 0" }, children: w.recommendedAction }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { fontSize: 12 }, children: w.evidence.map((e, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+          "· ",
+          e
+        ] }, i)) })
+      ] }, w.tag)) }),
+      report.sevenDayPlan.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { style: { marginTop: 16, marginBottom: 8 }, children: "7-day plan" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: report.sevenDayPlan.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 8, alignItems: "flex-start" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted mono", style: { width: 46, flexShrink: 0 }, children: [
+            "Day ",
+            d.day
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: d.tasks.map((t, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+            t.title,
+            " ",
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+              "(",
+              t.minutes,
+              " min)"
+            ] })
+          ] }, i)) })
+        ] }, d.day)) })
+      ] })
+    ] })
+  ] });
+}
+function LineChart({
+  points,
+  yOf,
+  height = 130,
+  color = "var(--info)"
+}) {
+  const width = 800;
+  if (points.length < 2) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { padding: "20px 0" }, children: "Not enough data yet." });
+  }
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const xSpan = maxX - minX || 1;
+  const ySpan = maxY - minY || 1;
+  const px = (x) => (x - minX) / xSpan * (width - 12) + 6;
+  const py = (y) => height - 10 - (y - minY) / ySpan * (height - 20);
+  const line = points.map((p) => `${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(" ");
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { className: "eval-graph", viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none", style: { height }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: line, fill: "none", stroke: color, strokeWidth: 2 }),
+    points.map((p, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: px(p.x), cy: py(p.y), r: 2.5, fill: color, children: /* @__PURE__ */ jsxRuntimeExports.jsx("title", { children: p.title }) }, i))
+  ] });
+}
+function ResultsBar({ split }) {
+  const total = split.wins + split.losses + split.draws;
+  if (total === 0) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No results yet." });
+  const w = split.wins / total * 100;
+  const d = split.draws / total * 100;
+  const l = split.losses / total * 100;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "div",
+      {
+        className: "row",
+        style: { height: 14, borderRadius: 7, overflow: "hidden", border: "1px solid var(--border)", gap: 0, alignItems: "stretch" },
+        children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${w}%`, height: "100%", background: "var(--accent)" }, title: `${split.wins} wins` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${d}%`, height: "100%", background: "var(--warn)" }, title: `${split.draws} draws` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${l}%`, height: "100%", background: "var(--danger)" }, title: `${split.losses} losses` })
+        ]
+      }
+    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginTop: 6, fontSize: 12 }, children: [
+      split.wins,
+      "W · ",
+      split.draws,
+      "D · ",
+      split.losses,
+      "L · ",
+      (split.wins / total * 100).toFixed(0),
+      "% score"
+    ] })
+  ] });
+}
+function ratingPoint(p, i) {
+  return { x: i, y: p.rating, title: `${p.date} · ${p.rating}` };
+}
+function accuracyPoint(p, i) {
+  return { x: i, y: p.accuracy, title: `${p.date} · ${p.accuracy.toFixed(1)}%` };
+}
+function Insights() {
+  const navigate = useStore((s) => s.navigate);
+  const [stats, setStats] = reactExports.useState(null);
+  const [timeClassFilter, setTimeClassFilter] = reactExports.useState(null);
+  reactExports.useEffect(() => {
+    void api.stats.overview().then(setStats);
+  }, []);
+  const timeClasses = reactExports.useMemo(() => {
+    if (!stats) return [];
+    const s = /* @__PURE__ */ new Set();
+    for (const p of stats.ratingHistory) s.add(p.timeClass ?? "unknown");
+    return [...s];
+  }, [stats]);
+  const filteredRating = reactExports.useMemo(() => {
+    if (!stats) return [];
+    return timeClassFilter ? stats.ratingHistory.filter((p) => (p.timeClass ?? "unknown") === timeClassFilter) : stats.ratingHistory;
+  }, [stats, timeClassFilter]);
+  if (!stats) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
+  if (stats.gamesTotal === 0) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Insights" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Trends from your imported games — rating, accuracy, openings, and where your mistakes happen." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { textAlign: "center", padding: 40 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "Import games to see your trends here." }) })
+    ] });
+  }
+  const phase = stats.mistakesByPhase;
+  const phaseMax = Math.max(phase.opening, phase.middlegame, phase.endgame, 1);
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Insights" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Trends from your imported games — rating, accuracy, openings, and where your mistakes happen." }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "stretch", gap: 14, flexWrap: "wrap", marginBottom: 14 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 2, minWidth: 380 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Rating trend" }),
+          timeClasses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 4 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${timeClassFilter === null ? "primary" : ""}`, onClick: () => setTimeClassFilter(null), children: "All" }),
+            timeClasses.map((tc) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${timeClassFilter === tc ? "primary" : ""}`, onClick: () => setTimeClassFilter(tc), children: TIME_CLASS_LABEL[tc] ?? tc }, tc))
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(LineChart, { points: filteredRating.map(ratingPoint), yOf: (v) => v })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 260 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Results" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ResultsBar, { split: stats.resultsOverall }),
+        Object.keys(stats.resultsByTimeClass).length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 8, marginTop: 12 }, children: Object.entries(stats.resultsByTimeClass).map(([tc, split]) => {
+          const total = split.wins + split.losses + split.draws;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: TIME_CLASS_LABEL[tc] ?? tc }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+              split.wins,
+              "W ",
+              split.draws,
+              "D ",
+              split.losses,
+              "L (",
+              total,
+              " games)"
+            ] })
+          ] }, tc);
+        }) })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "stretch", gap: 14, flexWrap: "wrap", marginBottom: 14 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 2, minWidth: 380 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Accuracy trend" }),
+        stats.gamesAnalyzed === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Analyze games to see your accuracy trend." }) : /* @__PURE__ */ jsxRuntimeExports.jsx(LineChart, { points: stats.accuracyHistory.map(accuracyPoint), yOf: (v) => v, color: "var(--accent)" })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { flex: 1, minWidth: 260 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Mistakes by phase" }),
+        phase.opening + phase.middlegame + phase.endgame === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No classified mistakes yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 8 }, children: [
+          ["Opening", phase.opening],
+          ["Middlegame", phase.middlegame],
+          ["Endgame", phase.endgame]
+        ].map(([label, count]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", fontSize: 12.5, marginBottom: 2 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: label }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: count })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 8, borderRadius: 4, background: "var(--bg-panel)", overflow: "hidden" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { width: `${count / phaseMax * 100}%`, height: "100%", background: "var(--info)" } }) })
+        ] }, label)) })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(CoachReportCard, {}),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Your openings" }),
+      stats.openings.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No openings recorded yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Opening" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "As" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Games" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Score" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Avg accuracy" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Last played" })
+        ] }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: stats.openings.map((o) => {
+          const total = o.games;
+          const score = total > 0 ? (o.wins + o.draws * 0.5) / total * 100 : 0;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "tr",
+            {
+              className: "clickable",
+              onClick: () => navigate({ name: "games", ecoFilter: o.ecoCode }),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { children: [
+                  openingLabel(o),
+                  " ",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted mono", children: o.ecoCode })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.color }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.games }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
+                  score.toFixed(0),
+                  "% ",
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { fontSize: 11 }, children: [
+                    "(",
+                    o.wins,
+                    "W ",
+                    o.draws,
+                    "D ",
+                    o.losses,
+                    "L)"
+                  ] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.avgAccuracy != null ? `${o.avgAccuracy.toFixed(1)}%` : "—" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: o.lastPlayed })
+              ]
+            },
+            `${o.ecoCode}-${o.color}`
+          );
+        }) })
+      ] })
+    ] })
+  ] });
+}
+const STRENGTH_PRESETS = [
+  { label: "Club (1200)", elo: 1200 },
+  { label: "Strong club (1600)", elo: 1600 },
+  { label: "Expert (2000)", elo: 2e3 },
+  { label: "Full strength", elo: void 0 }
+];
+function resultLabel(state, userColor) {
+  if (!state.result) return "Game over.";
+  if (state.result === "1/2-1/2") return `Draw by ${state.reason ?? "agreement"}.`;
+  const userWon = userColor === "white" && state.result === "1-0" || userColor === "black" && state.result === "0-1";
+  return userWon ? `You won by ${state.reason}.` : `The engine won by ${state.reason}.`;
+}
+function PlayOut({
+  fen,
+  userColor,
+  onExit
+}) {
+  const [state, setState] = reactExports.useState(null);
+  const [started, setStarted] = reactExports.useState(false);
+  const [starting, setStarting] = reactExports.useState(false);
+  const [thinking, setThinking] = reactExports.useState(false);
+  const [error, setError] = reactExports.useState(null);
+  const [elo, setElo] = reactExports.useState(1200);
+  const stoppedRef = reactExports.useRef(false);
+  reactExports.useEffect(() => {
+    stoppedRef.current = false;
+    return () => {
+      stoppedRef.current = true;
+      void api.play.stop();
+    };
+  }, []);
+  async function begin() {
+    setStarting(true);
+    setError(null);
+    try {
+      const res = await api.play.start({ fen, userColor, eloTarget: elo });
+      if (stoppedRef.current) return;
+      setState(res.state);
+      setStarted(true);
+      if (res.engineMove) playSound(res.engineMove.san.includes("x") ? "capture" : "move");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setStarting(false);
+    }
+  }
+  async function handleMove(uci) {
+    setThinking(true);
+    setError(null);
+    try {
+      const res = await api.play.move(uci);
+      if (stoppedRef.current) return;
+      setState(res.state);
+      if (res.engineMove) playSound(res.engineMove.san.includes("x") ? "capture" : "move");
+      if (res.state.over) playSound("complete");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setThinking(false);
+    }
+  }
+  const lastMoveEntry = state?.moves[state.moves.length - 1];
+  const lastMove = lastMoveEntry ? { from: lastMoveEntry.uci.slice(0, 2), to: lastMoveEntry.uci.slice(2, 4) } : null;
+  const isUsersTurn = state ? state.turn === (userColor === "white" ? "w" : "b") : false;
+  if (!started) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Play it out" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: "Play this position against the engine. Pick a strength, then make your move on the board." }),
+      error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginBottom: 8 }, children: error }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { flexWrap: "wrap", marginBottom: 10 }, children: STRENGTH_PRESETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${elo === p.elo ? "primary" : ""}`, onClick: () => setElo(p.elo), children: p.label }, p.label)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", disabled: starting, onClick: () => void begin(), children: starting ? "Starting…" : "Start game" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: onExit, children: "Cancel" })
+      ] })
+    ] });
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      Board,
+      {
+        fen: state?.fen ?? fen,
+        orientation: userColor,
+        interactive: !state?.over && !thinking,
+        onMove: (uci) => void handleMove(uci),
+        lastMove,
+        evalTarget: false,
+        maxWidth: 440
+      }
+    ),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 10, justifyContent: "space-between" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: state?.over ? resultLabel(state, userColor) : thinking ? "Engine is thinking…" : isUsersTurn ? "Your move." : "Waiting for the engine…" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: onExit, children: state?.over ? "Back to review" : "Exit" })
+    ] }),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginTop: 8 }, children: error })
+  ] });
+}
+function whiteCp(a) {
+  const best = a.multiPv[0];
+  if (!best) return 0;
+  let cp = best.score.type === "mate" ? best.score.value > 0 ? 1e3 : -1e3 : best.score.value;
+  if (a.sideToMove === "b") cp = -cp;
+  return Math.max(-800, Math.min(800, cp));
+}
+function whitePct(a) {
+  if (!a) return 50;
+  const cp = whiteCp(a);
+  return 50 + 50 * (2 / (1 + Math.exp(-cp / 400)) - 1);
+}
+function evalLabel(a) {
+  const best = a.multiPv[0];
+  if (!best) return "—";
+  if (best.score.type === "mate") {
+    const m = a.sideToMove === "w" ? best.score.value : -best.score.value;
+    return `#${m}`;
+  }
+  const cp = whiteCp(a);
+  return (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
+}
+function pvScoreLabel(pv, sideToMove) {
+  if (pv.score.type === "mate") {
+    const m = sideToMove === "w" ? pv.score.value : -pv.score.value;
+    return `#${m}`;
+  }
+  const cp = sideToMove === "w" ? pv.score.value : -pv.score.value;
+  return (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
+}
+function pvContinuationText(pv, baseFen) {
+  const sans = pv.pvSan && pv.pvSan.length ? pv.pvSan : pv.pvUci;
+  const rest = sans.slice(1, 7);
+  if (rest.length === 0) return "";
+  const parts = baseFen.split(" ");
+  const baseSide = parts[1] ?? "w";
+  const baseFullmove = parseInt(parts[5] ?? "1", 10) || 1;
+  let side = baseSide === "w" ? "b" : "w";
+  let moveNum = baseSide === "w" ? baseFullmove : baseFullmove + 1;
+  const out = [];
+  rest.forEach((san, i) => {
+    if (side === "w") out.push(`${moveNum}.${san}`);
+    else out.push(i === 0 ? `${moveNum}…${san}` : san);
+    if (side === "b") moveNum += 1;
+    side = side === "w" ? "b" : "w";
+  });
+  return out.join(" ");
+}
+function EvalGraph({
+  analyses,
+  mistakes,
+  currentPly,
+  onSelect
+}) {
+  const width = 800;
+  const height = 140;
+  const n = analyses.length;
+  const [hoverIdx, setHoverIdx] = reactExports.useState(null);
+  if (n < 2) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No evaluation data." });
+  const yOf = (a) => height / 2 - whiteCp(a) / 800 * (height / 2 - 6);
+  const xOf = (i) => i / (n - 1) * width;
+  const points = analyses.map((a, i) => `${xOf(i).toFixed(1)},${yOf(a).toFixed(1)}`);
+  const areaPoints = [`0,${height / 2}`, ...points, `${width},${height / 2}`].join(" ");
+  const cursorX = xOf(currentPly);
+  const dots = mistakes.map((m) => {
+    const idx = analyses.findIndex((a) => a.ply === m.ply);
+    if (idx < 0) return null;
+    const sev = SEVERITY_GLYPH[m.severity];
+    const color = sev.cls === "sev-blunder" ? "var(--danger)" : sev.cls === "sev-mistake" ? "var(--warn)" : "var(--info)";
+    return { x: xOf(idx), y: yOf(analyses[idx]), color, m };
+  }).filter((d) => d !== null);
+  const indexFromEvent = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = (e.clientX - rect.left) / rect.width;
+    return Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1))));
+  };
+  const hover = hoverIdx != null ? analyses[hoverIdx] : null;
+  const hoverLabelX = hover ? Math.min(Math.max(xOf(hoverIdx) - 43, 2), width - 88) : 0;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+    "svg",
+    {
+      className: "eval-graph",
+      viewBox: `0 0 ${width} ${height}`,
+      preserveAspectRatio: "none",
+      onClick: (e) => onSelect(indexFromEvent(e)),
+      onMouseMove: (e) => setHoverIdx(indexFromEvent(e)),
+      onMouseLeave: () => setHoverIdx(null),
+      style: { cursor: "pointer" },
+      children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: 0, y1: height / 2, x2: width, y2: height / 2, stroke: "var(--border)", strokeWidth: 1 }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("polygon", { points: areaPoints, fill: "var(--info)", opacity: 0.16, stroke: "none" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("polyline", { points: points.join(" "), fill: "none", stroke: "var(--info)", strokeWidth: 2 }),
+        dots.map((d, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: d.x, cy: d.y, r: 4.5, fill: d.color, stroke: "var(--bg-raised)", strokeWidth: 1.5, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("title", { children: [
+          "Move ",
+          Math.ceil(d.m.ply / 2),
+          " · ",
+          SEVERITY_LABEL[d.m.severity]
+        ] }) }, i)),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: cursorX, y1: 0, x2: cursorX, y2: height, stroke: "var(--accent)", strokeWidth: 2 }),
+        hover && hoverIdx != null && /* @__PURE__ */ jsxRuntimeExports.jsxs("g", { pointerEvents: "none", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("line", { x1: xOf(hoverIdx), y1: 0, x2: xOf(hoverIdx), y2: height, stroke: "var(--text-faint)", strokeWidth: 1, strokeDasharray: "3,3" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("g", { transform: `translate(${hoverLabelX}, 4)`, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("rect", { width: 86, height: 16, rx: 3, fill: "var(--bg-panel)", stroke: "var(--border)" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("text", { x: 6, y: 11.5, fontSize: 10, fill: "var(--text)", children: [
+              "Move ",
+              Math.ceil(hover.ply / 2),
+              " · ",
+              evalLabel(hover)
+            ] })
+          ] })
+        ] })
+      ]
+    }
+  );
+}
+function AccuracySummary({ game, mistakes }) {
+  if (game.accuracyWhite == null && game.accuracyBlack == null) return null;
+  const counts = {};
+  for (const m of mistakes) counts[m.severity] = (counts[m.severity] ?? 0) + 1;
+  const summaryBits = [];
+  if (counts.blunder || counts["missed-win"]) summaryBits.push(`${(counts.blunder ?? 0) + (counts["missed-win"] ?? 0)} blunder(s)`);
+  if (counts.mistake || counts["missed-draw"]) summaryBits.push(`${(counts.mistake ?? 0) + (counts["missed-draw"] ?? 0)} mistake(s)`);
+  if (counts.inaccuracy) summaryBits.push(`${counts.inaccuracy} inaccuracy(-ies)`);
+  const sides = [
+    { label: game.whiteName ?? "White", value: game.accuracyWhite, isUser: game.userColor === "white" },
+    { label: game.blackName ?? "Black", value: game.accuracyBlack, isUser: game.userColor === "black" }
+  ];
+  sides.sort((a, b) => Number(b.isUser) - Number(a.isUser));
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { marginBottom: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "accuracy-row", children: [
+    sides.map((s) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "accuracy-pill", children: s.value != null ? `${s.value.toFixed(1)}%` : "—" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
+        s.label,
+        s.isUser ? " (you)" : ""
+      ] })
+    ] }, s.label)),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: summaryBits.length > 0 ? summaryBits.join(" · ") : "No flagged mistakes" })
+  ] }) });
+}
+const EMPTY_ANNOTATIONS = { narrative: null, moves: [] };
+function Review({ gameId }) {
+  const navigate = useStore((s) => s.navigate);
+  const settings = useStore((s) => s.settings);
+  const jobs = useStore((s) => s.jobs);
+  const [game, setGame] = reactExports.useState(null);
+  const [moves, setMoves] = reactExports.useState([]);
+  const [analyses, setAnalyses] = reactExports.useState([]);
+  const [mistakes, setMistakes] = reactExports.useState([]);
+  const [currentPly, setCurrentPly] = reactExports.useState(0);
+  const [revealed, setRevealed] = reactExports.useState(false);
+  const [notice, setNotice] = reactExports.useState(null);
+  const [tryMode, setTryMode] = reactExports.useState(false);
+  const [tryFeedback, setTryFeedback] = reactExports.useState(null);
+  const [autoplay, setAutoplay] = reactExports.useState(false);
+  const [previewRank, setPreviewRank] = reactExports.useState(null);
+  const [previewIdx, setPreviewIdx] = reactExports.useState(0);
+  const [playFen, setPlayFen] = reactExports.useState(null);
+  const [annotations, setAnnotations] = reactExports.useState(EMPTY_ANNOTATIONS);
+  const [explain, setExplain] = reactExports.useState(null);
+  const [explainLoading, setExplainLoading] = reactExports.useState(false);
+  const [explainError, setExplainError] = reactExports.useState(null);
+  const aiConfigured = settings != null && settings.aiConfig.mode !== "manual";
+  const annotateJob = jobs.find(
+    (j) => j.type === "annotate-game" && j.payload?.gameId === gameId && (j.status === "pending" || j.status === "running")
+  );
+  reactExports.useEffect(() => {
+    void api.games.get(gameId).then(setGame);
+    void api.games.moves(gameId).then(setMoves);
+    void api.analysis.forGame(gameId).then(setAnalyses);
+    void api.analysis.mistakes(gameId).then(setMistakes);
+    void api.ai.annotationsForGame(gameId).then(setAnnotations);
+  }, [gameId]);
+  useAppEvent(["annotations:changed"], () => {
+    void api.ai.annotationsForGame(gameId).then(setAnnotations);
+  });
+  async function annotateThisGame() {
+    try {
+      await api.ai.annotateGame(gameId);
+      setNotice("Annotating this game — the coach’s summary will appear above when ready.");
+    } catch (e) {
+      setNotice(e.message);
+    }
+  }
+  async function explainCurrentPosition() {
+    setExplainLoading(true);
+    setExplainError(null);
+    try {
+      const res = await api.ai.explainPosition(gameId, currentPly);
+      setExplain({ ply: currentPly, text: res.text });
+    } catch (e) {
+      setExplainError(e.message);
+    } finally {
+      setExplainLoading(false);
+    }
+  }
+  reactExports.useEffect(() => {
+    const handler = (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "ArrowLeft") setCurrentPly((p) => Math.max(0, p - 1));
+      if (e.key === "ArrowRight") setCurrentPly((p) => Math.min(moves.length, p + 1));
+      if (e.key === "Home") setCurrentPly(0);
+      if (e.key === "End") setCurrentPly(moves.length);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [moves.length]);
+  reactExports.useEffect(() => {
+    const handler = (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "[") {
+        const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly);
+        if (prevMs) setCurrentPly(prevMs.ply);
+      } else if (e.key === "]") {
+        const next = mistakes.find((m) => m.ply > currentPly);
+        if (next) setCurrentPly(next.ply);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        setAutoplay((a) => !a);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [mistakes, currentPly]);
+  reactExports.useEffect(() => {
+    setRevealed(false);
+    setTryMode(false);
+    setTryFeedback(null);
+    setPreviewRank(null);
+    setPreviewIdx(0);
+    setExplain(null);
+    setExplainError(null);
+  }, [currentPly]);
+  reactExports.useEffect(() => {
+    if (!autoplay) return;
+    if (currentPly >= moves.length) {
+      setAutoplay(false);
+      return;
+    }
+    const t = setTimeout(() => setCurrentPly((p) => Math.min(moves.length, p + 1)), 900);
+    return () => clearTimeout(t);
+  }, [autoplay, currentPly, moves.length]);
+  const mistakeByPly = reactExports.useMemo(() => new Map(mistakes.map((m) => [m.ply, m])), [mistakes]);
+  const analysisByPly = reactExports.useMemo(() => new Map(analyses.map((a) => [a.ply, a])), [analyses]);
+  const annotationByPly = reactExports.useMemo(() => new Map(annotations.moves.map((a) => [a.ply, a])), [annotations.moves]);
+  if (!game) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
+  const baseFen = currentPly === 0 ? moves[0]?.fenBefore ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" : moves[currentPly - 1].fenAfter;
+  const baseLastMove = currentPly > 0 ? { from: moves[currentPly - 1].uci.slice(0, 2), to: moves[currentPly - 1].uci.slice(2, 4) } : null;
+  const orientation = game.userColor === "black" ? "black" : "white";
+  const mistakeHere = mistakeByPly.get(currentPly);
+  const upcomingMistake = mistakeByPly.get(currentPly + 1);
+  const positionAnalysis = analysisByPly.get(currentPly);
+  const bestHere = positionAnalysis?.multiPv[0];
+  const previewPv = previewRank != null ? positionAnalysis?.multiPv.find((p) => p.rank === previewRank) : null;
+  const previewSteps = [];
+  if (previewPv) {
+    const chess = new Chess(baseFen);
+    previewSteps.push({ fen: chess.fen(), lastMove: null });
+    for (const uci of previewPv.pvUci.slice(0, 8)) {
+      try {
+        const mv = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || void 0 });
+        previewSteps.push({ fen: chess.fen(), lastMove: { from: mv.from, to: mv.to } });
+      } catch {
+        break;
+      }
+    }
+  }
+  const previewing = previewSteps.length > 0;
+  const previewStep = previewing ? previewSteps[Math.min(previewIdx, previewSteps.length - 1)] : null;
+  const fen = previewStep ? previewStep.fen : baseFen;
+  const lastMove = previewStep ? previewStep.lastMove : baseLastMove;
+  const playedNext = upcomingMistake && revealed ? moves[currentPly] : null;
+  const boardArrows = !previewing && playedNext ? [
+    { from: playedNext.uci.slice(0, 2), to: playedNext.uci.slice(2, 4), color: "red" },
+    ...upcomingMistake.betterMoveUci ? [
+      {
+        from: upcomingMistake.betterMoveUci.slice(0, 2),
+        to: upcomingMistake.betterMoveUci.slice(2, 4),
+        color: "green"
+      }
+    ] : []
+  ] : [];
+  function startPreview(rank2, steps) {
+    setPreviewRank(rank2);
+    setPreviewIdx(steps);
+  }
+  function exitPreview() {
+    setPreviewRank(null);
+    setPreviewIdx(0);
+  }
+  function fenAtPly(ply) {
+    if (ply <= 0) return moves[0]?.fenBefore ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    return moves[ply - 1].fenAfter;
+  }
+  function jumpToMistake(direction) {
+    if (direction === 1) {
+      const next = mistakes.find((m) => m.ply > currentPly);
+      if (next) setCurrentPly(next.ply);
+    } else {
+      const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly);
+      if (prevMs) setCurrentPly(prevMs.ply);
+    }
+  }
+  function handleTryMove(uci, san) {
+    if (!upcomingMistake) return;
+    if (uci === upcomingMistake.betterMoveUci) {
+      setTryFeedback(`✓ Correct — ${san} was the engine's top choice.`);
+      setRevealed(true);
+      setTryMode(false);
+    } else {
+      setTryFeedback(`${san} isn't the engine's top choice. Try again, or reveal what happened.`);
+    }
+  }
+  async function createExercise(m) {
+    try {
+      await api.exercises.fromMistake(m.id);
+      setNotice("Exercise created — it will appear in Exercises, due today.");
+    } catch (e) {
+      setNotice(e.message);
+    }
+  }
+  async function addLineToRepertoire(uptoPly) {
+    try {
+      const nodes = await api.repertoire.addLineFromGame(gameId, uptoPly);
+      setNotice(`Added ${nodes.length} of your moves to the ${orientation} repertoire.`);
+    } catch (e) {
+      setNotice(e.message);
+    }
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", marginBottom: 8 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("h1", { children: [
+          game.whiteName,
+          " vs ",
+          game.blackName,
+          " ",
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", style: { fontSize: 14 }, children: [
+            game.result,
+            " · ",
+            game.timeClass ?? ""
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", title: game.ecoCode ?? void 0, children: game.ecoCode ? openingLabel(game) : "" })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => navigate({ name: "games" }), children: "← Games" })
+    ] }),
+    analyses.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout warn", style: { marginBottom: 12 }, children: "This game has no engine analysis yet. Queue it from the Games screen to see mistakes and coaching." }),
+    analyses.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(AccuracySummary, { game, mistakes }),
+    analyses.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 12 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", alignItems: "flex-start" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { style: { margin: 0 }, children: "🤖 Coach's summary" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            className: "small",
+            disabled: !aiConfigured || Boolean(annotateJob),
+            title: !aiConfigured ? "Configure an AI provider in Settings first" : void 0,
+            onClick: () => void annotateThisGame(),
+            children: annotateJob ? "Annotating…" : annotations.narrative ? "Re-annotate this game" : "Annotate this game"
+          }
+        )
+      ] }),
+      annotations.narrative ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6, marginTop: 6 }, children: annotations.narrative.text.split("\n\n").filter((p) => p.trim()).map((p, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { margin: 0 }, children: p }, i)) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { marginTop: 6, marginBottom: 0 }, children: aiConfigured ? "Generate an AI narrative of this game's opening, turning points, and key lessons." : "Configure an AI provider in Settings to generate a coach summary of this game." })
+    ] }),
+    notice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout", style: { marginBottom: 12 }, children: notice }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 16 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 220, flexShrink: 0, maxHeight: 500, overflowY: "auto" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Moves" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "move-list", children: moves.map((m) => {
+          const mk = mistakeByPly.get(m.ply);
+          const before = analysisByPly.get(m.ply - 1);
+          const isBest = !mk && before?.multiPv[0]?.moveUci === m.uci;
+          const glyph = mk ? SEVERITY_GLYPH[mk.severity] : isBest ? { glyph: "✓", cls: "sev-best" } : null;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+            m.color === "white" && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "num", children: [
+              m.moveNumber,
+              "."
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "span",
+              {
+                className: `mv ${currentPly === m.ply ? "current" : ""} ${mk ? mk.severity.replace("missed-win", "blunder").replace("missed-draw", "blunder") : ""}`,
+                onClick: () => setCurrentPly(m.ply),
+                title: mk ? SEVERITY_LABEL[mk.severity] : isBest ? "Best move" : void 0,
+                children: [
+                  m.san,
+                  glyph && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `mv-glyph ${glyph.cls}`, children: glyph.glyph })
+                ]
+              }
+            )
+          ] }, m.ply);
+        }) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: "0 1 460px", minWidth: 300 }, children: playFen ? /* @__PURE__ */ jsxRuntimeExports.jsx(PlayOut, { fen: playFen, userColor: orientation, onExit: () => setPlayFen(null) }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 8 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "div",
+            {
+              className: "eval-bar-vert-outer",
+              style: { height: "min(44vh, 400px)" },
+              title: "Static eval from stored analysis (White ↔ Black)",
+              children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "eval-bar-vert-white", style: { height: `${whitePct(positionAnalysis)}%` } })
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            Board,
+            {
+              fen,
+              orientation,
+              interactive: tryMode,
+              onMove: tryMode ? handleTryMove : void 0,
+              lastMove,
+              lastMoveSeverity: previewing ? null : mistakeHere?.severity ?? null,
+              arrows: boardArrows,
+              maxWidth: 440
+            }
+          ) })
+        ] }),
+        previewing && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 6, justifyContent: "center", gap: 6 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", disabled: previewIdx === 0, onClick: () => setPreviewIdx((i) => Math.max(0, i - 1)), children: "◀" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", style: { fontSize: 11.5 }, children: [
+            "Previewing line · step ",
+            previewIdx,
+            " of ",
+            previewSteps.length - 1
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              disabled: previewIdx >= previewSteps.length - 1,
+              onClick: () => setPreviewIdx((i) => Math.min(previewSteps.length - 1, i + 1)),
+              children: "▶"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: exitPreview, children: "Exit preview" })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 8, justifyContent: "center", flexWrap: "wrap" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(0), children: "⏮" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.max(0, currentPly - 1)), children: "◀" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              title: "Previous critical moment",
+              disabled: !mistakes.some((m) => m.ply < currentPly),
+              onClick: () => jumpToMistake(-1),
+              children: "⏴!"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", style: { minWidth: 110, textAlign: "center" }, children: currentPly === 0 ? "Start position" : `Move ${Math.ceil(currentPly / 2)} of ${Math.ceil(moves.length / 2)}` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              title: "Next critical moment",
+              disabled: !mistakes.some((m) => m.ply > currentPly),
+              onClick: () => jumpToMistake(1),
+              children: "!⏵"
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.min(moves.length, currentPly + 1)), children: "▶" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(moves.length), children: "⏭" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${autoplay ? "primary" : ""}`, onClick: () => setAutoplay((a) => !a), children: autoplay ? "⏸ Pause" : "▶ Autoplay" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              title: "Copy this position's FEN to the clipboard",
+              onClick: () => {
+                void api.clipboard.write(fen).then(() => {
+                  setNotice("FEN copied to clipboard.");
+                  setTimeout(() => setNotice((n) => n === "FEN copied to clipboard." ? null : n), 2e3);
+                });
+              },
+              children: "Copy FEN"
+            }
+          )
+        ] }),
+        analyses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 6 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(EvalGraph, { analyses, mistakes, currentPly, onSelect: setCurrentPly }) })
+      ] }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 260 }, children: [
+        upcomingMistake && !revealed && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Critical moment ahead" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { children: [
+            upcomingMistake.severity === "blunder" ? "This was the critical mistake in your game." : "You went wrong on the next move.",
+            " ",
+            "Before revealing: find your candidate moves. What is forcing? What changed after the last move?"
+          ] }),
+          tryFeedback && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: `callout ${tryFeedback.startsWith("✓") ? "success" : "warn"}`, style: { marginBottom: 8 }, children: tryFeedback }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
+            !tryMode && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => setTryMode(true), children: "Try it on the board" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setRevealed(true), children: "Compare with what happened" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setPlayFen(baseFen), children: "Play it out from here" })
+          ] })
+        ] }),
+        mistakeHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${mistakeHere.severity === "inaccuracy" ? "blue" : mistakeHere.severity === "mistake" ? "yellow" : "red"}`, children: SEVERITY_LABEL[mistakeHere.severity] }),
+            " ",
+            "Move ",
+            Math.ceil(mistakeHere.ply / 2)
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: mistakeHere.humanSummary }),
+          mistakeHere.whyBad && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: mistakeHere.whyBad }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginBottom: 8 }, children: [
+            "Better: ",
+            /* @__PURE__ */ jsxRuntimeExports.jsx("b", { className: "mono", children: mistakeHere.betterMoveSan ?? mistakeHere.betterMoveUci }),
+            mistakeHere.evalLossCp != null && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+              " · cost ≈ ",
+              (mistakeHere.evalLossCp / 100).toFixed(1),
+              " pawns"
+            ] }),
+            " · ",
+            "confidence: ",
+            mistakeHere.confidence
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => void createExercise(mistakeHere), children: "Create exercise" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(mistakeHere.ply - 1), children: "Go to position before" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setPlayFen(fenAtPly(mistakeHere.ply - 1)), children: "Play it out from here" })
+          ] })
+        ] }),
+        positionAnalysis && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { style: { margin: 0 }, children: "AI coach" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "small",
+                disabled: !aiConfigured || explainLoading,
+                title: !aiConfigured ? "Configure an AI provider in Settings first" : void 0,
+                onClick: () => void explainCurrentPosition(),
+                children: explainLoading ? "Thinking…" : "Explain this position"
+              }
+            )
+          ] }),
+          explainError && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginTop: 8 }, children: explainError }),
+          explain && explain.ply === currentPly ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { marginTop: 8, marginBottom: 0 }, children: explain.text }) : annotationByPly.get(currentPly) && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { marginTop: 8, marginBottom: 0 }, children: annotationByPly.get(currentPly).text }),
+          !aiConfigured && !annotationByPly.get(currentPly) && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { marginTop: 8, marginBottom: 0, fontSize: 12 }, children: "Configure an AI provider in Settings to get explanations for individual positions." })
+        ] }),
+        (revealed || mistakeHere || !upcomingMistake) && bestHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "What the engine saw" }),
+          positionAnalysis.multiPv.slice(0, 3).map((pv) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "div",
+            {
+              className: "muted",
+              style: {
+                marginBottom: 4,
+                cursor: "pointer",
+                borderRadius: 4,
+                padding: "2px 4px",
+                background: previewRank === pv.rank ? "var(--bg-panel)" : void 0
+              },
+              title: "Click to preview this line on the board",
+              onClick: () => startPreview(pv.rank, 1),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("b", { className: "mono", children: pv.moveSan ?? pv.moveUci }),
+                " ",
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: pvScoreLabel(pv, positionAnalysis.sideToMove) }),
+                " ",
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11 }, children: pvContinuationText(pv, positionAnalysis.fen) })
+              ]
+            },
+            pv.rank
+          )),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { fontSize: 11 }, children: [
+            "depth ",
+            positionAnalysis.depth ?? "?",
+            " · engine is a verifier, not the teacher"
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Turn this into training" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { flexWrap: "wrap" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              disabled: currentPly === 0,
+              onClick: () => void addLineToRepertoire(Math.min(currentPly, 20)),
+              children: "Add opening line to repertoire"
+            }
+          ) })
+        ] }),
+        mistakes.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { maxHeight: 240, overflowY: "auto" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { children: [
+            "Critical moments (",
+            mistakes.length,
+            ")"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: mistakes.map((m) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "div",
+            {
+              className: "row",
+              style: { justifyContent: "space-between", cursor: "pointer" },
+              onClick: () => setCurrentPly(m.ply),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  "Move ",
+                  Math.ceil(m.ply / 2),
+                  " ·",
+                  " ",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${m.severity === "inaccuracy" ? "blue" : m.severity === "mistake" ? "yellow" : "red"}`, children: SEVERITY_LABEL[m.severity] })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted mono", children: m.betterMoveSan })
+              ]
+            },
+            m.id
+          )) })
+        ] })
+      ] })
+    ] })
+  ] });
+}
+function formatDue(iso) {
+  if (!iso) return "—";
+  const day = iso.slice(0, 10);
+  const today = /* @__PURE__ */ new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const tomorrowStr = new Date(today.getTime() + 864e5).toISOString().slice(0, 10);
+  const yesterdayStr = new Date(today.getTime() - 864e5).toISOString().slice(0, 10);
+  if (day === todayStr) return "today";
+  if (day === tomorrowStr) return "tomorrow";
+  if (day === yesterdayStr) return "yesterday";
+  const d = /* @__PURE__ */ new Date(day + "T00:00:00");
+  return d.toLocaleDateString(void 0, { month: "short", day: "numeric" });
+}
+function matchLibraryOpening(ecoCode) {
+  return OPENINGS.find((o) => o.eco === ecoCode) ?? OPENINGS.find((o) => o.eco[0] === ecoCode[0] && o.eco[1] === ecoCode[1]);
+}
 const PRIORITIES = ["must-know", "normal", "optional", "avoid", "experimental"];
 function moveNumberOf(node2) {
   const parts = node2.fenBefore.split(" ");
   return parseInt(parts[5] ?? "1") || 1;
+}
+function isUserMove(node2) {
+  return node2.fenBefore.split(" ")[1] === (node2.color === "white" ? "w" : "b");
 }
 function fenAfterMove(fenBefore, uci) {
   const chess = new Chess(fenBefore);
@@ -15386,21 +16201,21 @@ function LineViewer({ opening, line }) {
     ] })
   ] });
 }
-function Library() {
-  const [openingId, setOpeningId] = reactExports.useState(OPENINGS[0].id);
+function Library({
+  openingId,
+  onOpeningIdChange
+}) {
   const [lineIdx, setLineIdx] = reactExports.useState(0);
   const opening = OPENINGS.find((o) => o.id === openingId) ?? OPENINGS[0];
   const line = opening.lines[Math.min(lineIdx, opening.lines.length - 1)];
+  reactExports.useEffect(() => setLineIdx(0), [openingId]);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 16 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "card", style: { width: 250, flexShrink: 0, maxHeight: 620, overflowY: "auto", padding: 10 }, children: OPENINGS.map((o) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs(
         "button",
         {
           className: `nav-item ${o.id === openingId ? "active" : ""}`,
-          onClick: () => {
-            setOpeningId(o.id);
-            setLineIdx(0);
-          },
+          onClick: () => onOpeningIdChange(o.id),
           title: o.summary,
           children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1 }, children: o.name }),
@@ -15431,11 +16246,20 @@ function Openings() {
   const [nodes, setNodes] = reactExports.useState([]);
   const [selected, setSelected] = reactExports.useState(null);
   const [practice, setPractice] = reactExports.useState(null);
+  const [libOpeningId, setLibOpeningId] = reactExports.useState(OPENINGS[0].id);
+  const [openingStats, setOpeningStats] = reactExports.useState([]);
   const refresh = reactExports.useCallback(() => {
     void api.repertoire.list(color).then(setNodes);
   }, [color]);
   reactExports.useEffect(refresh, [refresh]);
   useAppEvent(["repertoire:changed"], refresh);
+  reactExports.useEffect(() => {
+    void api.stats.overview().then((s) => setOpeningStats(s.openings));
+  }, []);
+  function studyOpening(opening) {
+    setLibOpeningId(opening.id);
+    setTab("library");
+  }
   const dueCount = reactExports.useMemo(
     () => nodes.filter(
       (n) => n.dueAt && n.dueAt <= (/* @__PURE__ */ new Date()).toISOString() && n.fenBefore.split(" ")[1] === (n.color === "white" ? "w" : "b")
@@ -15508,7 +16332,28 @@ function Openings() {
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: tab === "repertoire" ? "active" : "", onClick: () => setTab("repertoire"), children: "My repertoire" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: tab === "library" ? "active" : "", onClick: () => setTab("library"), children: "Openings library" })
     ] }),
-    tab === "library" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Library, {}) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+    tab === "library" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Library, { openingId: libOpeningId, onOpeningIdChange: setLibOpeningId }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+      openingStats.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Your openings" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: openingStats.slice(0, 5).map((o) => {
+          const match = matchLibraryOpening(o.ecoCode);
+          const score = o.games > 0 ? (o.wins + o.draws * 0.5) / o.games * 100 : 0;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", gap: 10 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("b", { style: { color: "var(--text)" }, children: openingLabel(o) }),
+              " — ",
+              o.games,
+              " games as ",
+              o.color,
+              ",",
+              " ",
+              score.toFixed(0),
+              "% score"
+            ] }),
+            match && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => studyOpening(match), children: "Study this opening" })
+          ] }, `${o.ecoCode}-${o.color}`);
+        }) })
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginBottom: 14 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "tabs", style: { marginBottom: 0, borderBottom: "none" }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: color === "white" ? "active" : "", onClick: () => setColor("white"), children: "As White" }),
@@ -15547,51 +16392,59 @@ function Openings() {
           /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Move" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Your move" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Played" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Status" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Priority" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", { children: "Due" }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("th", {})
             ] }) }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: g.nodes.map((n) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-              "tr",
-              {
-                className: `clickable ${selected?.id === n.id ? "selected" : ""}`,
-                onClick: () => setSelected(n),
-                children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
-                    moveNumberOf(n),
-                    "."
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "mono", children: /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: n.moveSan }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${n.status === "known" ? "green" : n.status === "lapsed" ? "red" : "blue"}`, children: n.status }) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "select",
-                    {
-                      value: n.priority,
-                      onClick: (e) => e.stopPropagation(),
-                      onChange: (e) => void api.repertoire.setPriority(n.id, e.target.value),
-                      children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
-                    }
-                  ) }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: n.dueAt ? n.dueAt.slice(0, 10) : "—" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                    "button",
-                    {
-                      className: "small danger",
-                      title: "Delete this move and everything after it in the line",
-                      onClick: (e) => {
-                        e.stopPropagation();
-                        if (!window.confirm(`Remove ${n.moveSan} from your ${color} repertoire? Moves that follow it in this line are removed too.`)) return;
-                        void api.repertoire.delete(n.id);
-                      },
-                      children: "✕"
-                    }
-                  ) })
-                ]
-              },
-              n.id
-            )) })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: g.nodes.map((n) => {
+              const own = isUserMove(n);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "tr",
+                {
+                  className: `clickable ${selected?.id === n.id ? "selected" : ""}`,
+                  style: own ? void 0 : { opacity: 0.6 },
+                  onClick: () => setSelected(n),
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "muted", children: [
+                      moveNumberOf(n),
+                      "."
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "mono", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: n.moveSan }),
+                      " ",
+                      !own && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", style: { fontSize: 10.5 }, children: "(opponent)" })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: own ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${n.status === "known" ? "green" : n.status === "lapsed" ? "red" : "blue"}`, children: n.status }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: own ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "select",
+                      {
+                        value: n.priority,
+                        onClick: (e) => e.stopPropagation(),
+                        onChange: (e) => void api.repertoire.setPriority(n.id, e.target.value),
+                        children: PRIORITIES.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p, children: p }, p))
+                      }
+                    ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: "—" }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: own ? formatDue(n.dueAt) : "—" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: "small danger",
+                        title: "Delete this move and everything after it in the line",
+                        onClick: (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`Remove ${n.moveSan} from your ${color} repertoire? Moves that follow it in this line are removed too.`)) return;
+                          void api.repertoire.delete(n.id);
+                        },
+                        children: "✕"
+                      }
+                    ) })
+                  ]
+                },
+                n.id
+              );
+            }) })
           ] })
         ] }, g.key)) }),
         selected && previewFenAfter && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 300, flexShrink: 0, position: "sticky", top: 0 }, children: [
@@ -15643,24 +16496,38 @@ function Lessons() {
       return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 16 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: cj.title }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", children: cj.summary }),
-        cj.modules.map((mod) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginBottom: 10 }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: mod.title }),
-          " ",
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
-            "— ",
-            mod.summary
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 4, marginTop: 6 }, children: mod.lessonRefs.map((ref) => {
-            const lesson = lessonsById.get(ref);
-            return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: lesson ? "" : "muted", children: lesson ? lesson.title : `${ref} (not yet in library)` }),
-              lesson ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "row", style: { gap: 8 }, children: [
-                statusBadge(lesson.id),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => navigate({ name: "lesson", lessonId: lesson.id }), children: "Study" })
-              ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", children: "planned" })
-            ] }, ref);
-          }) })
-        ] }, mod.id))
+        cj.modules.map((mod) => {
+          const known = mod.lessonRefs.filter((ref) => lessonsById.has(ref));
+          const completed = known.filter((ref) => progress.get(ref)?.status === "completed");
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginBottom: 10 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: mod.title }),
+                " ",
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+                  "— ",
+                  mod.summary
+                ] })
+              ] }),
+              known.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `badge ${completed.length === known.length ? "green" : ""}`, children: [
+                completed.length,
+                "/",
+                known.length,
+                " ✓"
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 4, marginTop: 6 }, children: mod.lessonRefs.map((ref) => {
+              const lesson = lessonsById.get(ref);
+              return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: lesson ? "" : "muted", children: lesson ? lesson.title : `${ref} (not yet in library)` }),
+                lesson ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "row", style: { gap: 8 }, children: [
+                  statusBadge(lesson.id),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: () => navigate({ name: "lesson", lessonId: lesson.id }), children: "Study" })
+                ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", children: "planned" })
+              ] }, ref);
+            }) })
+          ] }, mod.id);
+        })
       ] }, course.id);
     }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
@@ -15780,6 +16647,10 @@ function PuzzleBoard({
     finish();
   }
   const sideLabel = orientation === "white" ? "White" : "Black";
+  const spoilerMatch = /^(.*?)\s*(\(you played [^)]+\))\.?\s*$/.exec(prompt ?? "");
+  const basePrompt = spoilerMatch ? spoilerMatch[1] : prompt ?? `${sideLabel} to move. Find the best continuation.`;
+  const spoilerText = spoilerMatch ? spoilerMatch[2] : null;
+  const spoilerRevealed = status !== "solving" || hintsShown > 0;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 18 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: `0 1 ${maxWidth}px`, minWidth: 300 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
       Board,
@@ -15793,7 +16664,13 @@ function PuzzleBoard({
       }
     ) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 220 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: prompt ?? `${sideLabel} to move. Find the best continuation.` }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        basePrompt,
+        spoilerText && spoilerRevealed && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+          " ",
+          spoilerText
+        ] })
+      ] }),
       status === "wrong" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "callout warn", children: [
         "Not this one — that move loses the thread. Take another look at forcing moves.",
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 6 }, children: [
@@ -15952,7 +16829,11 @@ function StepBody({
   }
 }
 function LessonView({ lesson, completedStepIds = [], onStepComplete, onFinished }) {
-  const [stepIdx, setStepIdx] = reactExports.useState(0);
+  const [stepIdx, setStepIdx] = reactExports.useState(() => {
+    const doneAtMount = new Set(completedStepIds);
+    const firstIncomplete = lesson.steps.findIndex((s) => !doneAtMount.has(s.id));
+    return firstIncomplete >= 0 ? firstIncomplete : 0;
+  });
   const [exerciseMode, setExerciseMode] = reactExports.useState(false);
   const [exerciseIdx, setExerciseIdx] = reactExports.useState(0);
   const positions = reactExports.useMemo(() => new Map(lesson.positions.map((p) => [p.id, p])), [lesson]);
@@ -16046,13 +16927,27 @@ function LessonView({ lesson, completedStepIds = [], onStepComplete, onFinished 
     ] })
   ] });
 }
+function findNextInCourse(lessonId, courses) {
+  for (const course of courses) {
+    const cj = course.courseJson;
+    for (const mod of cj.modules) {
+      const idx = mod.lessonRefs.indexOf(lessonId);
+      if (idx >= 0 && idx < mod.lessonRefs.length - 1) return mod.lessonRefs[idx + 1];
+    }
+  }
+  return null;
+}
 function LessonPlayer({ lessonId }) {
   const navigate = useStore((s) => s.navigate);
   const [lesson, setLesson] = reactExports.useState(null);
   const [progress, setProgress] = reactExports.useState(null);
+  const [courses, setCourses] = reactExports.useState([]);
+  const [finished, setFinished] = reactExports.useState(false);
   reactExports.useEffect(() => {
+    setFinished(false);
     void api.lessons.get(lessonId).then(setLesson);
     void api.lessons.getProgress(lessonId).then(setProgress);
+    void api.courses.list().then(setCourses);
   }, [lessonId]);
   if (!lesson || !progress) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading lesson…" });
   const lj = lesson.lessonJson;
@@ -16060,6 +16955,24 @@ function LessonPlayer({ lessonId }) {
     const next = { ...progress, ...patch };
     setProgress(next);
     void api.lessons.setProgress(next);
+  }
+  if (finished) {
+    const nextLessonId = findNextInCourse(lessonId, courses);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { textAlign: "center", padding: 36 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { style: { marginTop: 0 }, children: "Lesson complete" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "muted", children: [
+        lj.title,
+        " · ",
+        lj.steps.length,
+        " step",
+        lj.steps.length === 1 ? "" : "s",
+        lj.exercises.length > 0 ? ` · ${lj.exercises.length} exercise${lj.exercises.length === 1 ? "" : "s"}` : ""
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "center", gap: 8, marginTop: 14 }, children: [
+        nextLessonId && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => navigate({ name: "lesson", lessonId: nextLessonId }), children: "Next lesson →" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => navigate({ name: "lessons" }), children: "Back to Lessons" })
+      ] })
+    ] }) });
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
@@ -16096,11 +17009,25 @@ function LessonPlayer({ lessonId }) {
         },
         onFinished: () => {
           saveProgress({ status: "completed", lessonId });
-          navigate({ name: "lessons" });
+          setFinished(true);
         }
       }
     )
   ] });
+}
+function currentStreak(results) {
+  let streak = 0;
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (results[i] !== "correct") break;
+    streak++;
+  }
+  return streak;
+}
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1e3);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 function Exercises({ initialTag }) {
   const [all, setAll] = reactExports.useState([]);
@@ -16110,6 +17037,8 @@ function Exercises({ initialTag }) {
   const [solvedCount, setSolvedCount] = reactExports.useState(0);
   const [results, setResults] = reactExports.useState([]);
   const [attempted, setAttempted] = reactExports.useState(false);
+  const [elapsedMs, setElapsedMs] = reactExports.useState(0);
+  const sessionStartRef = reactExports.useRef(0);
   const refresh = reactExports.useCallback(() => {
     void api.exercises.list().then(setAll);
   }, []);
@@ -16127,6 +17056,8 @@ function Exercises({ initialTag }) {
     setSolvedCount(0);
     setResults([]);
     setAttempted(false);
+    sessionStartRef.current = Date.now();
+    setElapsedMs(0);
   }
   async function startSession() {
     const due = await api.exercises.due();
@@ -16145,6 +17076,11 @@ function Exercises({ initialTag }) {
   reactExports.useEffect(() => {
     if (sessionJustFinished) playSound("complete");
   }, [sessionJustFinished]);
+  reactExports.useEffect(() => {
+    if (!session || sessionJustFinished) return;
+    const t = setInterval(() => setElapsedMs(Date.now() - sessionStartRef.current), 1e3);
+    return () => clearInterval(t);
+  }, [session, sessionJustFinished]);
   if (session) {
     const current = session[idx];
     if (!current) {
@@ -16156,7 +17092,9 @@ function Exercises({ initialTag }) {
             /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: solvedCount }),
             " of ",
             session.length,
-            " solved on the first try."
+            " solved on the first try",
+            elapsedMs > 0 ? ` in ${formatElapsed(elapsedMs)}` : "",
+            "."
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { justifyContent: "center", gap: 4, margin: "10px 0" }, children: results.map((r, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
             "span",
@@ -16186,18 +17124,32 @@ function Exercises({ initialTag }) {
         " · ",
         current.title
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4, marginBottom: 10 }, children: session.map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "span",
-        {
-          style: {
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: i < results.length ? results[i] === "correct" ? "var(--accent-strong)" : "var(--danger)" : i === idx ? "var(--info)" : "var(--border)"
-          }
-        },
-        i
-      )) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 14, marginBottom: 10, justifyContent: "space-between", flexWrap: "wrap" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { gap: 4 }, children: session.map((_, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "span",
+          {
+            style: {
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: i < results.length ? results[i] === "correct" ? "var(--accent-strong)" : "var(--danger)" : i === idx ? "var(--info)" : "var(--border)"
+            }
+          },
+          i
+        )) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row muted", style: { gap: 12, fontSize: 12.5 }, children: [
+          currentStreak(results) > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+            "🔥 ",
+            currentStreak(results),
+            " streak"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+            solvedCount,
+            " solved"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: formatElapsed(elapsedMs) })
+        ] })
+      ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(
         PuzzleBoard,
         {
@@ -16265,7 +17217,7 @@ function Exercises({ initialTag }) {
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.type.replace(/_/g, " ") }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: e.tags.slice(0, 3).map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge", style: { marginRight: 4 }, children: t }, t)) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: "★".repeat(e.difficulty) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: e.dueAt ? e.dueAt.slice(0, 10) : "—" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "muted", children: formatDue(e.dueAt) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("td", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: (ev) => {
           ev.stopPropagation();
           void beginSession([e]);
@@ -16641,16 +17593,26 @@ function Settings() {
   const [draft, setDraft] = reactExports.useState(null);
   const [saved, setSaved] = reactExports.useState(false);
   const [backfillNotice, setBackfillNotice] = reactExports.useState(null);
+  const lastSavedRef = reactExports.useRef(null);
+  const debounceRef = reactExports.useRef(null);
+  const savedFlashRef = reactExports.useRef(null);
   reactExports.useEffect(() => {
-    if (settings) setDraft(JSON.parse(JSON.stringify(settings)));
+    if (settings) {
+      const cloned = JSON.parse(JSON.stringify(settings));
+      setDraft(cloned);
+      lastSavedRef.current = cloned;
+    }
   }, [settings]);
   if (!draft) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
-  async function save() {
-    const identityChanged = draft.chesscomUsername !== settings?.chesscomUsername || draft.lichessUsername !== settings?.lichessUsername || draft.displayName !== settings?.displayName;
-    await api.settings.set(draft);
+  async function persist(next) {
+    const prev = lastSavedRef.current;
+    const identityChanged = prev != null && (next.chesscomUsername !== prev.chesscomUsername || next.lichessUsername !== prev.lichessUsername || next.displayName !== prev.displayName);
+    await api.settings.set(next);
+    lastSavedRef.current = next;
     await refreshSettings();
     setSaved(true);
-    setTimeout(() => setSaved(false), 2e3);
+    if (savedFlashRef.current) clearTimeout(savedFlashRef.current);
+    savedFlashRef.current = setTimeout(() => setSaved(false), 1500);
     if (identityChanged) {
       const result = await api.identity.backfill();
       if (result.updatedGames > 0) {
@@ -16660,6 +17622,13 @@ function Settings() {
       }
     }
   }
+  function flush() {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+      if (draft) void persist(draft);
+    }
+  }
   function runSetupWizard() {
     try {
       window.localStorage.removeItem(ONBOARDING_DONE_KEY);
@@ -16667,16 +17636,31 @@ function Settings() {
     }
     setOnboardingOpen(true);
   }
-  const set = (key, value) => setDraft({ ...draft, [key]: value });
+  const set = (key, value, opts) => {
+    const next = { ...draft, [key]: value };
+    setDraft(next);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (opts?.immediate) {
+      debounceRef.current = null;
+      void persist(next);
+    } else {
+      debounceRef.current = setTimeout(() => void persist(next), 600);
+    }
+  };
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { maxWidth: 720 }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Settings" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Profile, platforms, AI provider, and privacy. Everything is stored locally." }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", alignItems: "baseline" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Settings" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Profile, platforms, AI provider, and privacy. Everything is stored locally and saved as you go." })
+      ] }),
+      saved && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge green", children: "Saved ✓" })
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Profile and rating goal" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { flex: 1, minWidth: 180 }, children: [
           "Display name",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.displayName, onChange: (e) => set("displayName", e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.displayName, onChange: (e) => set("displayName", e.target.value), onBlur: flush })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { width: 130 }, children: [
           "Current rating",
@@ -16685,7 +17669,8 @@ function Settings() {
             {
               type: "number",
               value: draft.ratingCurrent,
-              onChange: (e) => set("ratingCurrent", parseInt(e.target.value) || 1500)
+              onChange: (e) => set("ratingCurrent", parseInt(e.target.value) || 1500),
+              onBlur: flush
             }
           )
         ] }),
@@ -16696,7 +17681,8 @@ function Settings() {
             {
               type: "number",
               value: draft.ratingGoal,
-              onChange: (e) => set("ratingGoal", parseInt(e.target.value) || 1800)
+              onChange: (e) => set("ratingGoal", parseInt(e.target.value) || 1800),
+              onBlur: flush
             }
           )
         ] })
@@ -16713,23 +17699,22 @@ function Settings() {
               "select",
               {
                 value: draft.boardTheme,
-                onChange: (e) => set("boardTheme", e.target.value),
+                onChange: (e) => set("boardTheme", e.target.value, { immediate: true }),
                 children: BOARD_THEMES.map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: t.value, children: t.label }, t.value))
               }
             )
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", children: [
             "Piece set",
-            /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: draft.pieceSet, onChange: (e) => set("pieceSet", e.target.value), children: PIECE_SETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p.value, children: p.label }, p.value)) })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: draft.pieceSet, onChange: (e) => set("pieceSet", e.target.value, { immediate: true }), children: PIECE_SETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p.value, children: p.label }, p.value)) })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "The preview updates immediately; click “Save settings” to apply everywhere." }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6, marginTop: 6 }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(
               "input",
               {
                 type: "checkbox",
                 checked: draft.soundEnabled,
-                onChange: (e) => set("soundEnabled", e.target.checked)
+                onChange: (e) => set("soundEnabled", e.target.checked, { immediate: true })
               }
             ),
             "Sound effects (moves, puzzle feedback, session complete)"
@@ -16755,11 +17740,11 @@ function Settings() {
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { flex: 1, minWidth: 180 }, children: [
           "Chess.com username",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.chesscomUsername, onChange: (e) => set("chesscomUsername", e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.chesscomUsername, onChange: (e) => set("chesscomUsername", e.target.value), onBlur: flush })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { flex: 1, minWidth: 180 }, children: [
           "Lichess username",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.lichessUsername, onChange: (e) => set("lichessUsername", e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.lichessUsername, onChange: (e) => set("lichessUsername", e.target.value), onBlur: flush })
         ] })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { marginTop: 8 }, children: [
@@ -16769,6 +17754,7 @@ function Settings() {
           {
             value: draft.userAgentContact,
             onChange: (e) => set("userAgentContact", e.target.value),
+            onBlur: flush,
             placeholder: "you@example.com"
           }
         )
@@ -16784,7 +17770,7 @@ function Settings() {
             "select",
             {
               value: draft.aiConfig.mode,
-              onChange: (e) => set("aiConfig", { ...draft.aiConfig, mode: e.target.value }),
+              onChange: (e) => set("aiConfig", { ...draft.aiConfig, mode: e.target.value }, { immediate: true }),
               children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "manual", children: "Manual (no AI)" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "openai-compatible", children: "OpenAI-compatible API" }),
@@ -16801,6 +17787,7 @@ function Settings() {
               {
                 value: draft.aiConfig.baseUrl,
                 onChange: (e) => set("aiConfig", { ...draft.aiConfig, baseUrl: e.target.value }),
+                onBlur: flush,
                 placeholder: draft.aiConfig.mode === "local-http" ? "http://localhost:11434/v1" : "https://api.openai.com/v1"
               }
             )
@@ -16814,7 +17801,8 @@ function Settings() {
                 {
                   type: "password",
                   value: draft.aiConfig.apiKey,
-                  onChange: (e) => set("aiConfig", { ...draft.aiConfig, apiKey: e.target.value })
+                  onChange: (e) => set("aiConfig", { ...draft.aiConfig, apiKey: e.target.value }),
+                  onBlur: flush
                 }
               )
             ] }),
@@ -16825,6 +17813,7 @@ function Settings() {
                 {
                   value: draft.aiConfig.model,
                   onChange: (e) => set("aiConfig", { ...draft.aiConfig, model: e.target.value }),
+                  onBlur: flush,
                   placeholder: "model name"
                 }
               )
@@ -16846,12 +17835,57 @@ function Settings() {
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginBottom: 8 }, children: "Re-run the first-time setup steps (identity, import, engine)." }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: runSetupWizard, children: "Run setup wizard again" })
     ] }),
-    backfillNotice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout success", style: { marginBottom: 14 }, children: backfillNotice }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => void save(), children: "Save settings" }),
-      saved && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge green", children: "Saved" })
+    backfillNotice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout success", style: { marginBottom: 14 }, children: backfillNotice })
+  ] });
+}
+function SessionBanner() {
+  const sessionQueue = useStore((s) => s.sessionQueue);
+  const sessionIndex = useStore((s) => s.sessionIndex);
+  const advanceSession = useStore((s) => s.advanceSession);
+  const endSession = useStore((s) => s.endSession);
+  if (sessionQueue.length === 0) return null;
+  const task = sessionQueue[sessionIndex];
+  const isLast = sessionIndex >= sessionQueue.length - 1;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "session-banner", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+      "Task ",
+      sessionIndex + 1,
+      " of ",
+      sessionQueue.length,
+      " — ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: task.title })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 6 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small primary", onClick: advanceSession, children: isLast ? "Finish session" : "Next →" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: endSession, title: "End guided session", children: "✕" })
     ] })
   ] });
+}
+const SHORTCUT_GROUPS = [
+  { title: "Global", items: [["?", "Show/hide this shortcuts help"]] },
+  {
+    title: "Review",
+    items: [
+      ["← / →", "Step one move back / forward"],
+      ["Home / End", "Jump to the start / end of the game"],
+      ["[ / ]", "Previous / next critical moment"],
+      ["Space", "Toggle autoplay"]
+    ]
+  },
+  { title: "Opening practice", items: [["Enter / Space", "Advance after answering a position"]] }
+];
+function ShortcutsOverlay({ onClose }) {
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "modal-backdrop", onClick: onClose, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "modal", style: { width: 420 }, onClick: (e) => e.stopPropagation(), children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Keyboard shortcuts" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 14 }, children: SHORTCUT_GROUPS.map((g) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginBottom: 6, fontWeight: 600 }, children: g.title }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 4 }, children: g.items.map(([key, desc]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono badge", children: key }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: desc })
+      ] }, key)) })
+    ] }, g.title)) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { marginTop: 16 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: onClose, children: "Close" }) })
+  ] }) });
 }
 function App() {
   const route = useStore((s) => s.route);
@@ -16859,6 +17893,16 @@ function App() {
   const onboardingOpen = useStore((s) => s.onboardingOpen);
   const setOnboardingOpen = useStore((s) => s.setOnboardingOpen);
   const settings = useStore((s) => s.settings);
+  const [shortcutsOpen, setShortcutsOpen] = reactExports.useState(false);
+  reactExports.useEffect(() => {
+    const handler = (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "?") setShortcutsOpen((o) => !o);
+      else if (e.key === "Escape") setShortcutsOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
   reactExports.useEffect(() => {
     if (!settings) return;
     let done = false;
@@ -16877,7 +17921,10 @@ function App() {
       content = /* @__PURE__ */ jsxRuntimeExports.jsx(Today, {});
       break;
     case "games":
-      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Games, {});
+      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Games, { initialText: route.ecoFilter });
+      break;
+    case "insights":
+      content = /* @__PURE__ */ jsxRuntimeExports.jsx(Insights, {});
       break;
     case "review":
       content = /* @__PURE__ */ jsxRuntimeExports.jsx(Review, { gameId: route.gameId });
@@ -16906,9 +17953,13 @@ function App() {
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "app-shell", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(Sidebar, {}),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "main-content", children: content }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "main-col", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(SessionBanner, {}),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "main-content", children: content })
+    ] }),
     importModalOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ImportModal, {}),
-    onboardingOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(Onboarding, {})
+    onboardingOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(Onboarding, {}),
+    shortcutsOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ShortcutsOverlay, { onClose: () => setShortcutsOpen(false) })
   ] });
 }
 wireEvents();

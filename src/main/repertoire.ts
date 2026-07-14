@@ -1,6 +1,7 @@
 import { Chess } from 'chess.js'
 import { getDb, uid, now } from './db'
 import { broadcast } from './events'
+import { openingLabel } from '@shared/eco-names'
 import type { RepertoireNodeRecord } from '@shared/types'
 
 function rowToNode(row: Record<string, unknown>): RepertoireNodeRecord {
@@ -211,6 +212,49 @@ export function attemptNode(id: string, correct: boolean): RepertoireNodeRecord 
 export function setNodePriority(id: string, priority: RepertoireNodeRecord['priority']): void {
   getDb().prepare('UPDATE repertoire_nodes SET priority = ? WHERE id = ?').run(priority, id)
   broadcast({ type: 'repertoire:changed', payload: null })
+}
+
+/**
+ * One-shot cleanup for legacy repertoire nodes inserted before lines carried an
+ * opening/line label (they show up as an unhelpful flat "Other lines" group).
+ * For each unlabeled root, names it from its source game's opening when known,
+ * else a generic fallback, and propagates the label down the whole subtree.
+ */
+export function backfillRepertoireLabels(): number {
+  const db = getDb()
+  const roots = db
+    .prepare('SELECT id, source_json FROM repertoire_nodes WHERE parent_id IS NULL AND opening_name IS NULL')
+    .all() as Array<{ id: string; source_json: string }>
+  if (roots.length === 0) return 0
+
+  let updated = 0
+  for (const root of roots) {
+    let label = 'From your games'
+    try {
+      const source = JSON.parse(root.source_json) as { type?: string; gameId?: string }
+      if (source.type === 'game' && source.gameId) {
+        const game = db
+          .prepare('SELECT opening_name, eco_code FROM games WHERE id = ?')
+          .get(source.gameId) as { opening_name: string | null; eco_code: string | null } | undefined
+        if (game) label = openingLabel({ openingName: game.opening_name, ecoCode: game.eco_code })
+      }
+    } catch {
+      /* malformed source_json — use the generic fallback label */
+    }
+
+    const subtree = [root.id]
+    for (let i = 0; i < subtree.length; i++) {
+      const children = db.prepare('SELECT id FROM repertoire_nodes WHERE parent_id = ?').all(subtree[i]) as Array<{
+        id: string
+      }>
+      for (const c of children) subtree.push(c.id)
+    }
+    const placeholders = subtree.map(() => '?').join(',')
+    db.prepare(`UPDATE repertoire_nodes SET opening_name = ? WHERE id IN (${placeholders})`).run(label, ...subtree)
+    updated += subtree.length
+  }
+  broadcast({ type: 'repertoire:changed', payload: null })
+  return updated
 }
 
 /** Delete a node and its full subtree (every move that follows it in the line). */

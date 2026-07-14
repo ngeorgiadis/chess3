@@ -14,7 +14,7 @@ import type {
 const MATE_CP = 30000
 
 /** Normalize a PV score (side-to-move perspective) to a comparable centipawn number. */
-function scoreToCp(score: PvLine['score']): number {
+export function scoreToCp(score: PvLine['score']): number {
   if (score.type === 'cp') return Math.max(-MATE_CP + 1000, Math.min(MATE_CP - 1000, score.value))
   return score.value > 0 ? MATE_CP - score.value * 10 : -MATE_CP - score.value * 10
 }
@@ -127,12 +127,20 @@ function classify(
   }
 }
 
+/** Opening/middlegame/endgame from ply position — same 20-ply / last-30% split used in stats.ts. */
+export function gamePhase(ply: number, totalPlies: number): 'opening' | 'middlegame' | 'endgame' {
+  if (ply <= 20) return 'opening'
+  if (totalPlies > 0 && ply >= totalPlies * 0.7) return 'endgame'
+  return 'middlegame'
+}
+
 function exerciseFromMistake(
   mistakeId: string,
   gameId: string,
   move: MoveRow,
   cls: Classified,
-  opponent: string
+  opponent: string,
+  totalPlies: number
 ): void {
   const db = getDb()
   const pv = cls.bestLine.pvUci.slice(0, 3)
@@ -143,7 +151,7 @@ function exerciseFromMistake(
   const type =
     cls.severity === 'missed-win' ? 'convert_win' : cls.severity === 'missed-draw' ? 'save_draw' : 'best_move'
   const sideToMove = move.color
-  const title = `From your game vs ${opponent || 'opponent'}`
+  const title = `Move ${move.move_number} vs ${opponent || 'opponent'} · ${gamePhase(move.ply, totalPlies)}`
   const prompt =
     cls.severity === 'missed-draw'
       ? `${sideToMove === 'white' ? 'White' : 'Black'} to move. You are worse — find the move that holds.`
@@ -174,7 +182,7 @@ function exerciseFromMistake(
     }),
     JSON.stringify(hints),
     cls.severity === 'blunder' ? 2 : 3,
-    JSON.stringify([...cls.themeTags, cls.trainingAction]),
+    JSON.stringify([...new Set([...cls.themeTags, cls.trainingAction])]),
     now(),
     now()
   )
@@ -275,7 +283,7 @@ function classifyAndStoreMistakes(gameId: string, moves: MoveRow[], analyses: Po
     logEvent('mistake.created', 'mistake', mistakeId, { gameId, severity: cls.severity })
 
     if (cls.severity !== 'inaccuracy' && cls.confidence !== 'low') {
-      exerciseFromMistake(mistakeId, gameId, move, cls, opponent)
+      exerciseFromMistake(mistakeId, gameId, move, cls, opponent, moves.length)
       exercisesCreated++
     } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
       biggestSkipped = { move, cls }
@@ -283,7 +291,7 @@ function classifyAndStoreMistakes(gameId: string, moves: MoveRow[], analyses: Po
   }
   // Release criterion: at least one exercise per analyzed game when any mistake exists
   if (exercisesCreated === 0 && biggestSkipped) {
-    exerciseFromMistake(uid('mis'), gameId, biggestSkipped.move, biggestSkipped.cls, opponent)
+    exerciseFromMistake(uid('mis'), gameId, biggestSkipped.move, biggestSkipped.cls, opponent, moves.length)
   }
 
   const accuracy = computeAccuracy(moves, analyses)

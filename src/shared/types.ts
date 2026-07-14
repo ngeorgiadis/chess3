@@ -259,7 +259,7 @@ export interface RepertoireNodeRecord {
 
 // ---- Jobs ----
 
-export type JobType = 'import' | 'analyze-game' | 'generate-lesson'
+export type JobType = 'import' | 'analyze-game' | 'generate-lesson' | 'annotate-game'
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface JobRecord {
@@ -290,6 +290,8 @@ export interface AppEvent {
     | 'lessons:changed'
     | 'exercises:changed'
     | 'repertoire:changed'
+    | 'annotations:changed'
+    | 'coach:changed'
   payload: unknown
 }
 
@@ -311,6 +313,79 @@ export interface LiveEvalStatus {
   available: boolean
   engineName: string | null
   error: string | null
+}
+
+// ---- Play vs engine ----
+
+export interface PlayMoveEntry {
+  uci: string
+  san: string
+}
+
+export interface PlayGameState {
+  fen: string
+  turn: 'w' | 'b'
+  userColor: 'white' | 'black'
+  moves: PlayMoveEntry[]
+  over: boolean
+  result: '1-0' | '0-1' | '1/2-1/2' | null
+  reason: string | null
+  engineName: string | null
+}
+
+export interface PlayStartArgs {
+  fen: string
+  userColor: 'white' | 'black'
+  /** Target playing strength, roughly 800-2500 Elo; omitted plays at full engine strength. */
+  eloTarget?: number
+}
+
+export interface PlayMoveResult {
+  state: PlayGameState
+  engineMove: PlayMoveEntry | null
+}
+
+// ---- Stats / Insights ----
+
+export interface RatingPoint {
+  date: string
+  rating: number
+  timeClass: string | null
+}
+
+export interface AccuracyPoint {
+  date: string
+  accuracy: number
+  gameId: string
+}
+
+export interface ResultsSplit {
+  wins: number
+  losses: number
+  draws: number
+}
+
+export interface OpeningStat {
+  ecoCode: string
+  openingName: string | null
+  color: 'white' | 'black'
+  games: number
+  wins: number
+  losses: number
+  draws: number
+  avgAccuracy: number | null
+  lastPlayed: string
+}
+
+export interface StatsOverview {
+  ratingHistory: RatingPoint[]
+  accuracyHistory: AccuracyPoint[]
+  resultsOverall: ResultsSplit
+  resultsByTimeClass: Record<string, ResultsSplit>
+  openings: OpeningStat[]
+  mistakesByPhase: { opening: number; middlegame: number; endgame: number }
+  gamesAnalyzed: number
+  gamesTotal: number
 }
 
 // ---- Study plan ----
@@ -356,6 +431,89 @@ export interface AiOutlineArgs {
 
 export interface AiGenerateArgs extends AiOutlineArgs {
   outline: string
+}
+
+// ---- AI commentary agents (position dossier / annotations / coach report) ----
+
+export interface DossierLine {
+  rank: number
+  san: string
+  /** Side-to-move perspective, e.g. "+1.20" or "#4". */
+  evalLabel: string
+  evalCp: number
+  continuationText: string
+}
+
+/** Compact, engine-grounded facts about one position — the only source AI commentary agents may draw moves/evals from. */
+export interface PositionDossier {
+  gameId: string
+  ply: number
+  fen: string
+  sideToMove: 'w' | 'b'
+  moveNumber: number
+  phase: 'opening' | 'middlegame' | 'endgame'
+  openingName: string | null
+  players: {
+    white: string | null
+    black: string | null
+    whiteRating: number | null
+    blackRating: number | null
+    userColor: 'white' | 'black' | 'unknown'
+  }
+  recentMovesText: string
+  playedMove: { san: string; uci: string } | null
+  mistake: { severity: MistakeSeverity; evalLossCp: number | null; themeTags: string[] } | null
+  lines: DossierLine[]
+  targetRatingMin: number
+  targetRatingMax: number
+}
+
+export type AnnotationKind = 'explain' | 'move' | 'narrative'
+
+export interface AnnotationRecord {
+  id: string
+  gameId: string
+  ply: number | null
+  kind: AnnotationKind
+  text: string
+  model: string
+  verified: boolean
+  createdAt: string
+}
+
+export interface GameAnnotations {
+  narrative: AnnotationRecord | null
+  moves: AnnotationRecord[]
+}
+
+export interface DiagnosisWeakness {
+  tag: string
+  evidence: string[]
+  impact: 'low' | 'medium' | 'high'
+  recommendedAction: string
+  linkedExerciseIds: string[]
+}
+
+export interface DiagnosisPlanTask {
+  type: string
+  title: string
+  minutes: number
+  refId?: string
+}
+
+export interface DiagnosisPlanDay {
+  day: number
+  tasks: DiagnosisPlanTask[]
+}
+
+export interface CoachReportRecord {
+  id: string
+  summary: string
+  topWeaknesses: DiagnosisWeakness[]
+  sevenDayPlan: DiagnosisPlanDay[]
+  gamesConsidered: number
+  model: string
+  createdAt: string
 }
 
 // ---- Settings ----

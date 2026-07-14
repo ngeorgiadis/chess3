@@ -234,6 +234,30 @@ const MIGRATIONS = [
   ALTER TABLE games ADD COLUMN accuracy_black REAL;
   ALTER TABLE repertoire_nodes ADD COLUMN opening_name TEXT;
   ALTER TABLE repertoire_nodes ADD COLUMN line_name TEXT;
+  `,
+  // v3 — AI commentary agents: position explanations, per-game annotations, coach reports
+  `
+  CREATE TABLE annotations (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    ply INTEGER,
+    kind TEXT NOT NULL CHECK(kind IN ('explain','move','narrative')),
+    text TEXT NOT NULL,
+    model TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_annotations_game ON annotations(game_id, kind, ply);
+
+  CREATE TABLE coach_reports (
+    id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    games_considered INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_coach_reports_created ON coach_reports(created_at);
   `
 ];
 function isOurSchema(candidate) {
@@ -4126,6 +4150,21 @@ function getProfile(id2) {
   const row = getDb().prepare("SELECT * FROM engine_profiles WHERE id = ?").get(id2);
   return row ? rowToProfile(row) : null;
 }
+function resolveDefaultEngineRecord() {
+  const settings = getSettings();
+  if (settings.defaultProfileId) {
+    const profile = getProfile(settings.defaultProfileId);
+    const eng = profile ? getEngine(profile.engineId) : null;
+    if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
+  }
+  for (const profile of listProfiles()) {
+    const eng = getEngine(profile.engineId);
+    if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
+  }
+  const first = listEngines().find((e) => e.status === "available");
+  if (first) return { executablePath: first.executablePath, name: first.name };
+  throw new Error("No UCI engine available. Add one on the Engines screen first.");
+}
 function saveProfile(profile) {
   const db2 = getDb();
   const id2 = profile.id || uid("prof");
@@ -4206,7 +4245,12 @@ function classify(move, before, after, lowOnTime) {
     bestLine
   };
 }
-function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
+function gamePhase(ply, totalPlies) {
+  if (ply <= 20) return "opening";
+  if (totalPlies > 0 && ply >= totalPlies * 0.7) return "endgame";
+  return "middlegame";
+}
+function exerciseFromMistake(mistakeId, gameId, move, cls, opponent, totalPlies) {
   const db2 = getDb();
   const pv = cls.bestLine.pvUci.slice(0, 3);
   const { sans, legalCount } = uciLineToSan(move.fen_before, pv);
@@ -4214,7 +4258,7 @@ function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
   const moves = pv.slice(0, legalCount).map((u, i) => ({ moveUci: u, moveSan: sans[i] }));
   const type2 = cls.severity === "missed-win" ? "convert_win" : cls.severity === "missed-draw" ? "save_draw" : "best_move";
   const sideToMove = move.color;
-  const title2 = `From your game vs ${opponent || "opponent"}`;
+  const title2 = `Move ${move.move_number} vs ${opponent || "opponent"} · ${gamePhase(move.ply, totalPlies)}`;
   const prompt = cls.severity === "missed-draw" ? `${sideToMove === "white" ? "White" : "Black"} to move. You are worse — find the move that holds.` : `${sideToMove === "white" ? "White" : "Black"} to move. Find the strongest continuation (you played ${move.san} in the game).`;
   const hints = [];
   if (cls.themeTags.includes("mate-pattern")) hints.push("There is a forced mate. Start with checks.");
@@ -4240,7 +4284,7 @@ function exerciseFromMistake(mistakeId, gameId, move, cls, opponent) {
     }),
     JSON.stringify(hints),
     cls.severity === "blunder" ? 2 : 3,
-    JSON.stringify([...cls.themeTags, cls.trainingAction]),
+    JSON.stringify([.../* @__PURE__ */ new Set([...cls.themeTags, cls.trainingAction])]),
     now(),
     now()
   );
@@ -4313,14 +4357,14 @@ function classifyAndStoreMistakes(gameId, moves, analyses) {
     );
     logEvent("mistake.created", "mistake", mistakeId, { gameId, severity: cls.severity });
     if (cls.severity !== "inaccuracy" && cls.confidence !== "low") {
-      exerciseFromMistake(mistakeId, gameId, move, cls, opponent);
+      exerciseFromMistake(mistakeId, gameId, move, cls, opponent, moves.length);
       exercisesCreated++;
     } else if (!biggestSkipped || cls.evalLossCp > biggestSkipped.cls.evalLossCp) {
       biggestSkipped = { move, cls };
     }
   }
   if (exercisesCreated === 0 && biggestSkipped) {
-    exerciseFromMistake(uid("mis"), gameId, biggestSkipped.move, biggestSkipped.cls, opponent);
+    exerciseFromMistake(uid("mis"), gameId, biggestSkipped.move, biggestSkipped.cls, opponent, moves.length);
   }
   const accuracy = computeAccuracy(moves, analyses);
   db2.prepare("UPDATE games SET accuracy_white = ?, accuracy_black = ? WHERE id = ?").run(
@@ -4811,14 +4855,14 @@ function importPgnText(text, source, onProgress) {
       }
       const h = parsed.headers;
       const url = h.Link ?? (h.Site?.startsWith("http") ? h.Site : null);
-      const outcome = insertGame({
+      const outcome2 = insertGame({
         parsed,
         sourcePlatform: source,
         sourceGameUrl: url
       });
-      if (outcome.status === "inserted") {
+      if (outcome2.status === "inserted") {
         result.gamesImported++;
-        result.createdGameIds.push(outcome.gameId);
+        result.createdGameIds.push(outcome2.gameId);
       } else {
         result.duplicatesSkipped++;
       }
@@ -12723,6 +12767,315 @@ function createExerciseFromMistake(mistakeId) {
   broadcast({ type: "exercises:changed", payload: null });
   return rowToExercise(db2.prepare("SELECT * FROM exercises WHERE id = ?").get(id2));
 }
+const OPENINGS = [
+  {
+    id: "italian-game",
+    name: "Italian Game",
+    eco: "C50",
+    side: "white",
+    summary: "Classical development: bishop to its most natural attacking square. Solid plans, open positions.",
+    lines: [
+      {
+        name: "Giuoco Piano (main line)",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6", "O-O", "O-O"],
+        note: "The quiet build-up: c3 prepares d4, castle early and expand slowly."
+      },
+      {
+        name: "Giuoco Piano, center push",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d4", "exd4", "cxd4", "Bb4+", "Bd2", "Bxd2+", "Nbxd2", "d5"],
+        note: "The sharp central break — know the ...Bb4+ resource."
+      },
+      {
+        name: "Two Knights Defense",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "d3", "Be7", "O-O", "O-O"],
+        note: "Against 3...Nf6, the modern d3 keeps a stable center."
+      }
+    ]
+  },
+  {
+    id: "ruy-lopez",
+    name: "Ruy Lopez (Spanish)",
+    eco: "C60",
+    side: "white",
+    summary: "The most principled fight for the center: pressure on c6 undermines e5.",
+    lines: [
+      {
+        name: "Morphy Defense (main line)",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"],
+        note: "The tabiya of classical chess — both sides complete development before the fight starts."
+      },
+      {
+        name: "Berlin Defense",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6", "O-O", "Nxe4", "d4", "Nd6", "Bxc6", "dxc6", "dxe5", "Nf5"],
+        note: "Solid equalizing try for Black; the famous endgame structure."
+      },
+      {
+        name: "Exchange Variation",
+        san: ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6", "dxc6", "O-O", "f6", "d4", "exd4", "Nxd4"],
+        note: "White plays for the superior pawn structure in the endgame."
+      }
+    ]
+  },
+  {
+    id: "scotch-game",
+    name: "Scotch Game",
+    eco: "C45",
+    side: "white",
+    summary: "Open the center immediately with d4. Direct piece play, fewer theory-heavy branches.",
+    lines: [
+      {
+        name: "Main line",
+        san: ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Nf6", "Nxc6", "bxc6", "e5", "Qe7", "Qe2", "Nd5", "c4"],
+        note: "The Mieses variation — sharp play against the d5-knight."
+      },
+      {
+        name: "Classical ...Bc5",
+        san: ["e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Nxd4", "Bc5", "Be3", "Qf6", "c3", "Nge7"],
+        note: "Black targets d4; Be3 and c3 keep the knight anchored."
+      }
+    ]
+  },
+  {
+    id: "sicilian-defense",
+    name: "Sicilian Defense",
+    eco: "B20",
+    side: "black",
+    summary: "The fighting reply to 1.e4: trade a wing pawn for the center and play for the win.",
+    lines: [
+      {
+        name: "Najdorf Variation",
+        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2", "e5", "Nb3", "Be7"],
+        note: "...a6 keeps every option open; ...e5 grabs central space."
+      },
+      {
+        name: "Dragon Variation",
+        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "g6", "Be3", "Bg7", "f3", "O-O"],
+        note: "The long-diagonal bishop is the soul of the Dragon."
+      },
+      {
+        name: "Classical Variation",
+        san: ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "Nc6", "Be2", "e5", "Nb3", "Be7"],
+        note: "Natural development first — a good first Sicilian."
+      }
+    ]
+  },
+  {
+    id: "french-defense",
+    name: "French Defense",
+    eco: "C00",
+    side: "black",
+    summary: "Solid pawn chain, counterattack with ...c5 and ...f6. Accepts a cramped light-squared bishop.",
+    lines: [
+      {
+        name: "Advance Variation",
+        san: ["e4", "e6", "d4", "d5", "e5", "c5", "c3", "Nc6", "Nf3", "Qb6", "Be2", "cxd4", "cxd4", "Nh6"],
+        note: "Attack the base of the chain: c5 and Qb6 hit d4/b2."
+      },
+      {
+        name: "Winawer Variation",
+        san: ["e4", "e6", "d4", "d5", "Nc3", "Bb4", "e5", "c5", "a3", "Bxc3+", "bxc3", "Ne7"],
+        note: "Structural imbalance: Black gives the bishop pair for damaged white pawns."
+      },
+      {
+        name: "Exchange Variation",
+        san: ["e4", "e6", "d4", "d5", "exd5", "exd5", "Nf3", "Nf6", "Bd3", "Bd6", "O-O", "O-O"],
+        note: "Symmetrical but not dead — develop actively and fight for e-file control."
+      }
+    ]
+  },
+  {
+    id: "caro-kann",
+    name: "Caro-Kann Defense",
+    eco: "B10",
+    side: "black",
+    summary: "The solid ...d5 defense without locking in the c8-bishop. Great pawn structures.",
+    lines: [
+      {
+        name: "Classical Variation",
+        san: ["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5", "Ng3", "Bg6", "h4", "h6", "Nf3", "Nd7"],
+        note: "The bishop gets out before ...e6. Mind the h4-h5 space grab."
+      },
+      {
+        name: "Advance Variation",
+        san: ["e4", "c6", "d4", "d5", "e5", "Bf5", "Nf3", "e6", "Be2", "Nd7", "O-O", "Ne7"],
+        note: "Same good bishop, French-like structure without the bad bishop."
+      }
+    ]
+  },
+  {
+    id: "scandinavian",
+    name: "Scandinavian Defense",
+    eco: "B01",
+    side: "black",
+    summary: "Challenge e4 on move one. Easy to learn, clear plans — ideal first defense.",
+    lines: [
+      {
+        name: "Main line ...Qa5",
+        san: ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qa5", "d4", "Nf6", "Nf3", "c6", "Bc4", "Bf5", "Bd2", "e6"],
+        note: "The queen sits safely on a5; ...c6 gives her a retreat."
+      },
+      {
+        name: "Modern ...Qd6",
+        san: ["e4", "d5", "exd5", "Qxd5", "Nc3", "Qd6", "d4", "Nf6", "Nf3", "a6", "Be2", "Nc6"],
+        note: "Flexible queen placement, often with ...g6 setups."
+      }
+    ]
+  },
+  {
+    id: "queens-gambit",
+    name: "Queen's Gambit",
+    eco: "D30",
+    side: "white",
+    summary: "Offer the c-pawn to deflect Black from the center. The backbone of 1.d4 play.",
+    lines: [
+      {
+        name: "QGD Orthodox",
+        san: ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5", "Be7", "e3", "O-O", "Nf3", "h6", "Bh4", "b6"],
+        note: "Declined: Black keeps the center and unwinds slowly."
+      },
+      {
+        name: "QGD Exchange",
+        san: ["d4", "d5", "c4", "e6", "Nc3", "Nf6", "cxd5", "exd5", "Bg5", "c6", "e3", "Bf5"],
+        note: "The minority-attack structure — b4-b5 comes later."
+      },
+      {
+        name: "Queen’s Gambit Accepted",
+        san: ["d4", "d5", "c4", "dxc4", "Nf3", "Nf6", "e3", "e6", "Bxc4", "c5", "O-O", "a6"],
+        note: "Black returns the pawn for quick development and ...c5."
+      }
+    ]
+  },
+  {
+    id: "slav-defense",
+    name: "Slav Defense",
+    eco: "D10",
+    side: "black",
+    summary: "Defend d5 with ...c6 and keep the c8-bishop free. Rock-solid against the Queen’s Gambit.",
+    lines: [
+      {
+        name: "Main line",
+        san: ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "dxc4", "a4", "Bf5", "e3", "e6", "Bxc4", "Bb4"],
+        note: "Take on c4 only after Nc3, then develop the bishop before ...e6."
+      },
+      {
+        name: "Semi-Slav",
+        san: ["d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "e6", "e3", "Nbd7", "Bd3", "dxc4", "Bxc4", "b5"],
+        note: "The Meran structure: ...dxc4 and ...b5 gain time on the bishop."
+      }
+    ]
+  },
+  {
+    id: "london-system",
+    name: "London System",
+    eco: "D02",
+    side: "white",
+    summary: "A system, not a theory battle: Bf4, e3, c3 pyramid against almost anything.",
+    lines: [
+      {
+        name: "Main setup vs ...d5",
+        san: ["d4", "d5", "Bf4", "Nf6", "e3", "c5", "c3", "Nc6", "Nd2", "e6", "Ngf3", "Bd6", "Bg3", "O-O", "Bd3"],
+        note: "The full pyramid; recapture on g3 keeps the structure intact."
+      },
+      {
+        name: "vs King’s Indian setups",
+        san: ["d4", "Nf6", "Bf4", "g6", "e3", "Bg7", "Nf3", "O-O", "Be2", "d6", "h3", "Nbd7", "O-O"],
+        note: "Keep the dark-squared bishop safe with h3 before Black plays ...Nh5."
+      }
+    ]
+  },
+  {
+    id: "kings-indian",
+    name: "King's Indian Defense",
+    eco: "E60",
+    side: "black",
+    summary: "Concede the center, then strike back with ...e5 or ...c5 and attack the king.",
+    lines: [
+      {
+        name: "Classical main line",
+        san: ["d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2", "e5", "O-O", "Nc6", "d5", "Ne7"],
+        note: "The famous race: Black attacks on the kingside, White on the queenside."
+      },
+      {
+        name: "Fianchetto Variation",
+        san: ["d4", "Nf6", "c4", "g6", "Nf3", "Bg7", "g3", "O-O", "Bg2", "d6", "O-O", "Nbd7", "Nc3", "e5"],
+        note: "White’s calm setup — Black equalizes with the standard ...e5 break."
+      }
+    ]
+  },
+  {
+    id: "nimzo-indian",
+    name: "Nimzo-Indian Defense",
+    eco: "E20",
+    side: "black",
+    summary: "Pin the knight, fight for e4, and play against doubled c-pawns. Strategically rich.",
+    lines: [
+      {
+        name: "Rubinstein (4.e3)",
+        san: ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3", "O-O", "Bd3", "d5", "Nf3", "c5", "O-O", "Nc6"],
+        note: "Both sides develop naturally; the central tension resolves later."
+      },
+      {
+        name: "Classical (4.Qc2)",
+        san: ["d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Qc2", "O-O", "a3", "Bxc3+", "Qxc3", "b6", "Bg5", "Bb7"],
+        note: "White avoids doubled pawns at the cost of time; ...b6 and ...Bb7 hit e4."
+      }
+    ]
+  },
+  {
+    id: "english-opening",
+    name: "English Opening",
+    eco: "A10",
+    side: "white",
+    summary: "Flank control of d5. Flexible move orders that can transpose almost anywhere.",
+    lines: [
+      {
+        name: "Four Knights",
+        san: ["c4", "e5", "Nc3", "Nf6", "Nf3", "Nc6", "g3", "d5", "cxd5", "Nxd5", "Bg2", "Nb6", "O-O", "Be7"],
+        note: "A reversed Sicilian with an extra tempo — pressure on the long diagonal."
+      },
+      {
+        name: "Symmetrical",
+        san: ["c4", "c5", "Nc3", "Nc6", "g3", "g6", "Bg2", "Bg7", "Nf3", "Nf6", "O-O", "O-O", "d4", "cxd4", "Nxd4"],
+        note: "The main tabiya of the Symmetrical English."
+      }
+    ]
+  }
+];
+const RANGES = [
+  { from: "A00", to: "A39", name: "Flank opening" },
+  { from: "A40", to: "A44", name: "Queen's Pawn Game" },
+  { from: "A45", to: "A49", name: "Indian Defense" },
+  { from: "A50", to: "A79", name: "Benoni / Indian Defense" },
+  { from: "A80", to: "A99", name: "Dutch Defense" },
+  { from: "B00", to: "B19", name: "Uncommon King's Pawn Defense" },
+  { from: "B20", to: "B99", name: "Sicilian Defense" },
+  { from: "C00", to: "C19", name: "French Defense" },
+  { from: "C20", to: "C29", name: "King's Pawn Game" },
+  { from: "C30", to: "C39", name: "King's Gambit" },
+  { from: "C40", to: "C49", name: "Open Game" },
+  { from: "C50", to: "C59", name: "Italian Game" },
+  { from: "C60", to: "C99", name: "Ruy Lopez (Spanish)" },
+  { from: "D00", to: "D05", name: "Queen's Pawn Game" },
+  { from: "D06", to: "D69", name: "Queen's Gambit" },
+  { from: "D70", to: "D99", name: "Grünfeld Defense" },
+  { from: "E00", to: "E09", name: "Catalan Opening" },
+  { from: "E10", to: "E59", name: "Nimzo-Indian / Bogo-Indian" },
+  { from: "E60", to: "E99", name: "King's Indian Defense" }
+];
+const EXACT = new Map(OPENINGS.map((o) => [o.eco, o.name]));
+function ecoFamilyName(eco) {
+  const code2 = eco.trim().toUpperCase();
+  if (!/^[A-E]\d{2}$/.test(code2)) return null;
+  const exact = EXACT.get(code2);
+  if (exact) return exact;
+  const range = RANGES.find((r) => code2 >= r.from && code2 <= r.to);
+  return range?.name ?? null;
+}
+function openingLabel(game) {
+  if (game.openingName) return game.openingName;
+  if (game.ecoCode) return ecoFamilyName(game.ecoCode) ?? game.ecoCode;
+  return "—";
+}
 function rowToNode(row) {
   return {
     id: row.id,
@@ -12877,6 +13230,33 @@ function setNodePriority(id2, priority) {
   getDb().prepare("UPDATE repertoire_nodes SET priority = ? WHERE id = ?").run(priority, id2);
   broadcast({ type: "repertoire:changed", payload: null });
 }
+function backfillRepertoireLabels() {
+  const db2 = getDb();
+  const roots = db2.prepare("SELECT id, source_json FROM repertoire_nodes WHERE parent_id IS NULL AND opening_name IS NULL").all();
+  if (roots.length === 0) return 0;
+  let updated = 0;
+  for (const root of roots) {
+    let label = "From your games";
+    try {
+      const source = JSON.parse(root.source_json);
+      if (source.type === "game" && source.gameId) {
+        const game = db2.prepare("SELECT opening_name, eco_code FROM games WHERE id = ?").get(source.gameId);
+        if (game) label = openingLabel({ openingName: game.opening_name, ecoCode: game.eco_code });
+      }
+    } catch {
+    }
+    const subtree = [root.id];
+    for (let i = 0; i < subtree.length; i++) {
+      const children = db2.prepare("SELECT id FROM repertoire_nodes WHERE parent_id = ?").all(subtree[i]);
+      for (const c of children) subtree.push(c.id);
+    }
+    const placeholders = subtree.map(() => "?").join(",");
+    db2.prepare(`UPDATE repertoire_nodes SET opening_name = ? WHERE id IN (${placeholders})`).run(label, ...subtree);
+    updated += subtree.length;
+  }
+  broadcast({ type: "repertoire:changed", payload: null });
+  return updated;
+}
 function deleteNode(id2) {
   const db2 = getDb();
   const toDelete = [id2];
@@ -12934,22 +13314,6 @@ class LiveEvaluator {
       error: null
     };
   }
-  /** Resolve the engine to use: default profile's engine, else first available engine. */
-  resolveEngineRecord() {
-    const settings = getSettings();
-    if (settings.defaultProfileId) {
-      const profile = getProfile(settings.defaultProfileId);
-      const eng = profile ? getEngine(profile.engineId) : null;
-      if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
-    }
-    for (const profile of listProfiles()) {
-      const eng = getEngine(profile.engineId);
-      if (eng && eng.status === "available") return { executablePath: eng.executablePath, name: eng.name };
-    }
-    const first = listEngines().find((e) => e.status === "available");
-    if (first) return { executablePath: first.executablePath, name: first.name };
-    throw new Error("No UCI engine available. Add one on the Engines screen first.");
-  }
   async setEnabled(on) {
     if (!on) {
       this.enabled = false;
@@ -12957,7 +13321,7 @@ class LiveEvaluator {
       return this.status();
     }
     if (this.enabled && this.engine?.isRunning) return this.status();
-    const rec = this.resolveEngineRecord();
+    const rec = resolveDefaultEngineRecord();
     const engine = new UciEngine(rec.executablePath);
     engine.start();
     await engine.handshake();
@@ -13066,6 +13430,124 @@ const liveEval$1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePr
   __proto__: null,
   liveEval
 }, Symbol.toStringTag, { value: "Module" }));
+const MOVETIME_MS = 700;
+const MIN_ELO = 800;
+const MAX_ELO = 2500;
+class PlayVsEngine {
+  engine = null;
+  chess = new Chess();
+  startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  userColor = "white";
+  engineName = null;
+  isEngineTurn() {
+    const toMoveColor = this.chess.turn() === "w" ? "white" : "black";
+    return toMoveColor !== this.userColor && !this.gameOver().over;
+  }
+  gameOver() {
+    if (this.chess.isCheckmate()) {
+      return { over: true, result: this.chess.turn() === "w" ? "0-1" : "1-0", reason: "checkmate" };
+    }
+    if (this.chess.isStalemate()) return { over: true, result: "1/2-1/2", reason: "stalemate" };
+    if (this.chess.isThreefoldRepetition()) return { over: true, result: "1/2-1/2", reason: "threefold repetition" };
+    if (this.chess.isInsufficientMaterial()) return { over: true, result: "1/2-1/2", reason: "insufficient material" };
+    if (this.chess.isDrawByFiftyMoves()) return { over: true, result: "1/2-1/2", reason: "50-move rule" };
+    if (this.chess.isDraw()) return { over: true, result: "1/2-1/2", reason: "draw" };
+    return { over: false, result: null, reason: null };
+  }
+  state() {
+    const over = this.gameOver();
+    return {
+      fen: this.chess.fen(),
+      turn: this.chess.turn(),
+      userColor: this.userColor,
+      moves: this.chess.history({ verbose: true }).map((m) => ({ uci: m.from + m.to + (m.promotion ?? ""), san: m.san })),
+      over: over.over,
+      result: over.result,
+      reason: over.reason,
+      engineName: this.engineName
+    };
+  }
+  /** Apply strength options if the engine supports them; falls back to full strength silently. */
+  applyStrength(engine, options, eloTarget) {
+    if (eloTarget == null) return;
+    const elo = Math.max(MIN_ELO, Math.min(MAX_ELO, Math.round(eloTarget)));
+    const limitStrength = options.find((o) => o.name === "UCI_LimitStrength");
+    const uciElo = options.find((o) => o.name === "UCI_Elo");
+    if (limitStrength && uciElo && uciElo.type === "spin") {
+      const min = uciElo.min ?? MIN_ELO;
+      const max = uciElo.max ?? MAX_ELO;
+      engine.setOption("UCI_LimitStrength", true);
+      engine.setOption("UCI_Elo", Math.max(min, Math.min(max, elo)));
+      return;
+    }
+    const skillLevel = options.find((o) => o.name === "Skill Level" && o.type === "spin");
+    if (skillLevel) {
+      const skill = Math.round((elo - MIN_ELO) / (MAX_ELO - MIN_ELO) * 20);
+      engine.setOption("Skill Level", Math.max(0, Math.min(20, skill)));
+    }
+  }
+  async engineReply() {
+    if (!this.engine?.isRunning) return null;
+    const uciMoves = this.chess.history({ verbose: true }).map((m) => m.from + m.to + (m.promotion ?? ""));
+    this.engine.send(`position fen ${this.startFen}${uciMoves.length ? " moves " + uciMoves.join(" ") : ""}`);
+    this.engine.send(`go movetime ${MOVETIME_MS}`);
+    const line = await this.engine.waitForLine((l) => l.startsWith("bestmove"), 15e3);
+    const uci = /^bestmove (\S+)/.exec(line)?.[1];
+    if (!uci || uci === "(none)") return null;
+    let mv;
+    try {
+      mv = this.chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || void 0 });
+    } catch {
+      throw new Error(`Engine returned an illegal move (${uci}) — try again or exit.`);
+    }
+    return { uci: mv.from + mv.to + (mv.promotion ?? ""), san: mv.san };
+  }
+  async start(fen, userColor, eloTarget) {
+    await this.stop();
+    this.chess = new Chess(fen);
+    this.startFen = fen;
+    this.userColor = userColor;
+    const rec = resolveDefaultEngineRecord();
+    const engine = new UciEngine(rec.executablePath);
+    engine.start();
+    const meta = await engine.handshake();
+    this.applyStrength(engine, meta.options, eloTarget);
+    await engine.newGame();
+    this.engine = engine;
+    this.engineName = rec.name;
+    let engineMove = null;
+    if (this.isEngineTurn()) engineMove = await this.engineReply();
+    return { state: this.state(), engineMove };
+  }
+  async userMove(uci) {
+    if (!this.engine?.isRunning) throw new Error("No game in progress. Start a new game first.");
+    if (this.isEngineTurn()) throw new Error("It's the engine's turn.");
+    if (this.gameOver().over) throw new Error("The game is already over.");
+    let mv;
+    try {
+      mv = this.chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci.slice(4) || void 0 });
+    } catch {
+      throw new Error("Illegal move.");
+    }
+    let engineMove = null;
+    if (this.isEngineTurn()) engineMove = await this.engineReply();
+    return { state: this.state(), engineMove };
+  }
+  status() {
+    return this.engine?.isRunning ? this.state() : null;
+  }
+  async stop() {
+    const engine = this.engine;
+    this.engine = null;
+    this.engineName = null;
+    if (engine) await engine.quit();
+  }
+}
+const playVsEngine = new PlayVsEngine();
+const play = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  playVsEngine
+}, Symbol.toStringTag, { value: "Module" }));
 const ACTION_LABELS = {
   tactics: "Tactical awareness",
   opening: "Opening preparation",
@@ -13116,11 +13598,11 @@ function computeTodayPlan() {
        FROM mistakes WHERE created_at >= ? GROUP BY training_action ORDER BY impact DESC LIMIT 5`
   ).all(since);
   const weaknesses = weaknessRows.map((w) => {
-    const pawns = Math.round(w.impact / 100);
+    const avgPawns = w.count > 0 ? w.impact / 100 / w.count : 0;
     return {
       tag: w.tag,
       count: w.count,
-      evidence: `${w.count} mistake${w.count === 1 ? "" : "s"} costing ~${pawns} pawn${pawns === 1 ? "" : "s"} in your recent games`
+      evidence: `${w.count} mistake${w.count === 1 ? "" : "s"} across your recent games, avg ${avgPawns.toFixed(1)} pawns each`
     };
   });
   if (gameCount === 0) {
@@ -13203,6 +13685,128 @@ function computeTodayPlan() {
     unreviewedGames: unreviewed
   };
 }
+const RATING_HISTORY_LIMIT = 300;
+const OPENINGS_TOP_N = 15;
+function outcome(userColor, result) {
+  if (!result) return null;
+  if (result === "1/2-1/2") return "draw";
+  if (userColor === "white" && result === "1-0" || userColor === "black" && result === "0-1") return "win";
+  if (userColor === "white" && result === "0-1" || userColor === "black" && result === "1-0") return "loss";
+  return null;
+}
+function emptySplit() {
+  return { wins: 0, losses: 0, draws: 0 };
+}
+function addOutcome(split, o) {
+  if (o === "win") split.wins++;
+  else if (o === "loss") split.losses++;
+  else if (o === "draw") split.draws++;
+}
+function ratingHistory() {
+  const db2 = getDb();
+  const rows = db2.prepare(
+    `SELECT ended_at AS date, time_class,
+         CASE WHEN user_color = 'white' THEN white_rating ELSE black_rating END AS rating
+       FROM games
+       WHERE user_color IN ('white','black') AND ended_at IS NOT NULL
+         AND (CASE WHEN user_color = 'white' THEN white_rating ELSE black_rating END) IS NOT NULL
+       ORDER BY ended_at DESC LIMIT ?`
+  ).all(RATING_HISTORY_LIMIT);
+  return rows.reverse().map((r) => ({ date: r.date.slice(0, 10), rating: r.rating, timeClass: r.time_class }));
+}
+function accuracyHistory() {
+  const db2 = getDb();
+  const rows = db2.prepare(
+    `SELECT id AS game_id, ended_at AS date,
+         CASE WHEN user_color = 'white' THEN accuracy_white ELSE accuracy_black END AS accuracy
+       FROM games
+       WHERE analysis_status = 'done' AND user_color IN ('white','black') AND ended_at IS NOT NULL
+         AND (CASE WHEN user_color = 'white' THEN accuracy_white ELSE accuracy_black END) IS NOT NULL
+       ORDER BY ended_at ASC`
+  ).all();
+  return rows.map((r) => ({ date: r.date.slice(0, 10), accuracy: r.accuracy, gameId: r.game_id }));
+}
+function resultsSplits() {
+  const db2 = getDb();
+  const rows = db2.prepare(
+    `SELECT user_color, result, COALESCE(time_class, 'unknown') AS time_class
+       FROM games WHERE user_color IN ('white','black') AND result IS NOT NULL AND ongoing = 0`
+  ).all();
+  const overall = emptySplit();
+  const byTimeClass = {};
+  for (const r of rows) {
+    const o = outcome(r.user_color, r.result);
+    addOutcome(overall, o);
+    if (!byTimeClass[r.time_class]) byTimeClass[r.time_class] = emptySplit();
+    addOutcome(byTimeClass[r.time_class], o);
+  }
+  return { overall, byTimeClass };
+}
+function openingStats() {
+  const db2 = getDb();
+  const rows = db2.prepare(
+    `SELECT eco_code, opening_name, user_color, result, ended_at,
+         CASE WHEN user_color = 'white' THEN accuracy_white ELSE accuracy_black END AS accuracy
+       FROM games
+       WHERE user_color IN ('white','black') AND eco_code IS NOT NULL AND ongoing = 0`
+  ).all();
+  const groups = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const key = `${r.eco_code}|||${r.user_color}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { ecoCode: r.eco_code, openingName: r.opening_name, color: r.user_color, split: emptySplit(), accuracySum: 0, accuracyCount: 0, lastPlayed: "" };
+      groups.set(key, g);
+    }
+    if (!g.openingName && r.opening_name) g.openingName = r.opening_name;
+    addOutcome(g.split, outcome(r.user_color, r.result));
+    if (r.accuracy != null) {
+      g.accuracySum += r.accuracy;
+      g.accuracyCount++;
+    }
+    if (r.ended_at && r.ended_at > g.lastPlayed) g.lastPlayed = r.ended_at;
+  }
+  return [...groups.values()].map((g) => ({
+    ecoCode: g.ecoCode,
+    openingName: g.openingName,
+    color: g.color,
+    games: g.split.wins + g.split.losses + g.split.draws,
+    wins: g.split.wins,
+    losses: g.split.losses,
+    draws: g.split.draws,
+    avgAccuracy: g.accuracyCount > 0 ? g.accuracySum / g.accuracyCount : null,
+    lastPlayed: g.lastPlayed.slice(0, 10)
+  })).sort((a, b) => b.games - a.games).slice(0, OPENINGS_TOP_N);
+}
+function mistakesByPhase() {
+  const db2 = getDb();
+  const rows = db2.prepare(`SELECT m.ply AS ply, g.ply_count AS ply_count FROM mistakes m JOIN games g ON g.id = m.game_id`).all();
+  let opening = 0;
+  let middlegame = 0;
+  let endgame = 0;
+  for (const r of rows) {
+    if (r.ply <= 20) opening++;
+    else if (r.ply_count > 0 && r.ply >= r.ply_count * 0.7) endgame++;
+    else middlegame++;
+  }
+  return { opening, middlegame, endgame };
+}
+function getStatsOverview() {
+  const db2 = getDb();
+  const gamesTotal = db2.prepare("SELECT COUNT(*) AS c FROM games").get().c;
+  const gamesAnalyzed = db2.prepare("SELECT COUNT(*) AS c FROM games WHERE analysis_status = 'done'").get().c;
+  const { overall, byTimeClass } = resultsSplits();
+  return {
+    ratingHistory: ratingHistory(),
+    accuracyHistory: accuracyHistory(),
+    resultsOverall: overall,
+    resultsByTimeClass: byTimeClass,
+    openings: openingStats(),
+    mistakesByPhase: mistakesByPhase(),
+    gamesAnalyzed,
+    gamesTotal
+  };
+}
 async function chat(args) {
   const cfg = getSettings().aiConfig;
   if (cfg.mode === "manual") {
@@ -13234,7 +13838,24 @@ async function chat(args) {
   if (!content) throw new Error("AI provider returned an empty response.");
   return content;
 }
-const SYSTEM_PROMPT = `You are The Chess Master Coach, a patient but demanding chess instructor specialized in
+function parseJsonLoose(text) {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+const SYSTEM_PROMPT$3 = `You are The Chess Master Coach, a patient but demanding chess instructor specialized in
 helping 1400–1800 online-rated players improve by turning chess ideas into practical board skills.
 You transform user-provided authorized chess material, notes, games or instructions into structured
 lessons and exercises for the Chess Mentor Studio desktop app.
@@ -13295,24 +13916,7 @@ User goal: ${args.goal || "Create a focused lesson from this material."}
 Target rating: ${args.targetRatingMin}-${args.targetRatingMax}.
 
 ${OUTLINE_INSTRUCTIONS}`;
-  return chat({ system: SYSTEM_PROMPT, user, temperature: 0.5 });
-}
-function tryParseJson(text) {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(cleaned.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
+  return chat({ system: SYSTEM_PROMPT$3, user, temperature: 0.5 });
 }
 async function generateLesson(args) {
   const baseUser = `Source material (rights mode: ${args.rightsMode}):
@@ -13327,8 +13931,8 @@ ${args.outline.slice(0, 8e3)}
 ---
 
 ${jsonInstructions(args)}`;
-  let rawText = await chat({ system: SYSTEM_PROMPT, user: baseUser, expectJson: true, temperature: 0.3 });
-  let lessonJson = tryParseJson(rawText);
+  let rawText = await chat({ system: SYSTEM_PROMPT$3, user: baseUser, expectJson: true, temperature: 0.3 });
+  let lessonJson = parseJsonLoose(rawText);
   if (!lessonJson) {
     return { lessonJson: null, rawText, report: null, error: "The AI response was not valid JSON." };
   }
@@ -13341,14 +13945,533 @@ Your previous JSON had validation problems:
 ${issues}
 
 Fix ALL problems and output the corrected full JSON object only.`;
-    rawText = await chat({ system: SYSTEM_PROMPT, user: repairUser, expectJson: true, temperature: 0.2 });
-    const repaired = tryParseJson(rawText);
+    rawText = await chat({ system: SYSTEM_PROMPT$3, user: repairUser, expectJson: true, temperature: 0.2 });
+    const repaired = parseJsonLoose(rawText);
     if (repaired) {
       lessonJson = repaired;
       report = validateLesson(lessonJson);
     }
   }
   return { lessonJson, rawText, report };
+}
+function loadMoveRows(gameId) {
+  return getDb().prepare("SELECT ply, move_number, color, san, uci FROM moves WHERE game_id = ? ORDER BY ply").all(gameId);
+}
+function formatMoveRun(moves) {
+  if (moves.length === 0) return "(start of game)";
+  const parts = [];
+  for (const m of moves) {
+    if (m.color === "white") parts.push(`${m.move_number}.${m.san}`);
+    else if (parts.length === 0) parts.push(`${m.move_number}…${m.san}`);
+    else parts.push(m.san);
+  }
+  return parts.join(" ");
+}
+function evalLabel(score) {
+  if (score.type === "mate") return `#${score.value}`;
+  return (score.value >= 0 ? "+" : "") + (score.value / 100).toFixed(2);
+}
+function buildPositionDossier(gameId, ply, targetRatingMin = 1300, targetRatingMax = 1700) {
+  const db2 = getDb();
+  const game = db2.prepare(
+    "SELECT white_name, black_name, white_rating, black_rating, user_color, eco_code, opening_name FROM games WHERE id = ?"
+  ).get(gameId);
+  if (!game) return null;
+  const moves = loadMoveRows(gameId);
+  const analyses = getAnalysisForGame(gameId);
+  const analysis = analyses.find((a) => a.ply === ply);
+  if (!analysis) return null;
+  const mistakes = getMistakesForGame(gameId);
+  const mistake = mistakes.find((m) => m.ply === ply) ?? null;
+  const playedMoveRow = ply > 0 ? moves[ply - 1] : void 0;
+  const playedMove = playedMoveRow ? { san: playedMoveRow.san, uci: playedMoveRow.uci } : null;
+  const recentMoves = moves.slice(Math.max(0, ply - 6), ply);
+  const recentMovesText = formatMoveRun(recentMoves);
+  const lines = analysis.multiPv.slice(0, 3).map((pv) => ({
+    rank: pv.rank,
+    san: pv.moveSan ?? pv.moveUci,
+    evalLabel: evalLabel(pv.score),
+    evalCp: scoreToCp(pv.score),
+    continuationText: (pv.pvSan && pv.pvSan.length ? pv.pvSan : pv.pvUci).slice(1, 6).join(" ")
+  }));
+  return {
+    gameId,
+    ply,
+    fen: analysis.fen,
+    sideToMove: analysis.sideToMove,
+    moveNumber: playedMoveRow ? playedMoveRow.move_number : Math.floor(ply / 2) + 1,
+    phase: gamePhase(ply, moves.length),
+    openingName: game.eco_code ? openingLabel({ openingName: game.opening_name, ecoCode: game.eco_code }) : null,
+    players: {
+      white: game.white_name,
+      black: game.black_name,
+      whiteRating: game.white_rating,
+      blackRating: game.black_rating,
+      userColor: game.user_color
+    },
+    recentMovesText,
+    playedMove,
+    mistake: mistake ? { severity: mistake.severity, evalLossCp: mistake.evalLossCp, themeTags: mistake.themeTags } : null,
+    lines,
+    targetRatingMin,
+    targetRatingMax
+  };
+}
+function formatDossierForPrompt(d) {
+  const sideName = d.sideToMove === "w" ? "White" : "Black";
+  const lines = [
+    `Position: move ${d.moveNumber}, ${sideName} to move. Phase: ${d.phase}.${d.openingName ? ` Opening: ${d.openingName}.` : ""}`,
+    `FEN: ${d.fen}`,
+    `Recent moves: ${d.recentMovesText}`,
+    d.playedMove ? `The move actually played to reach this position: ${d.playedMove.san}` : "",
+    d.mistake ? `This move was flagged as a ${d.mistake.severity}${d.mistake.evalLossCp != null ? ` (lost ~${(d.mistake.evalLossCp / 100).toFixed(1)} pawns of evaluation)` : ""}. Themes: ${d.mistake.themeTags.join(", ") || "none"}.` : "",
+    "Engine lines (side-to-move perspective, already verified legal — use ONLY these moves and continuations when naming specific moves):",
+    ...d.lines.map(
+      (l) => `  ${l.rank}. ${l.san} (${l.evalLabel})${l.continuationText ? ` — continues ${l.continuationText}` : ""}`
+    ),
+    `Players: White ${d.players.white ?? "?"}${d.players.whiteRating ? ` (${d.players.whiteRating})` : ""}, Black ${d.players.black ?? "?"}${d.players.blackRating ? ` (${d.players.blackRating})` : ""}. The user played ${d.players.userColor}.`,
+    `Target audience: a chess player rated ${d.targetRatingMin}-${d.targetRatingMax}. Keep it concrete and practical, not academic.`
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+function buildGameDossierBundle(gameId, plies, targetRatingMin = 1300, targetRatingMax = 1700) {
+  const allSanMoves = loadMoveRows(gameId).map((r) => r.san);
+  const dossiers = plies.map((ply) => buildPositionDossier(gameId, ply, targetRatingMin, targetRatingMax)).filter((d) => d !== null);
+  return { allSanMoves, dossiers };
+}
+const SAN_TOKEN = /\b(?:O-O-O|O-O|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)/g;
+const AMBIGUOUS_SQUARE_ONLY = /^[a-h][1-8]$/;
+function extractSanTokens(text) {
+  const tokens = text.match(SAN_TOKEN) ?? [];
+  return [...new Set(tokens.filter((t) => !AMBIGUOUS_SQUARE_ONLY.test(t)))];
+}
+function dossierAllowlist(d) {
+  const set = /* @__PURE__ */ new Set();
+  if (d.playedMove) set.add(d.playedMove.san);
+  for (const token of extractSanTokens(d.recentMovesText)) set.add(token);
+  for (const line of d.lines) {
+    set.add(line.san);
+    for (const token of extractSanTokens(line.continuationText)) set.add(token);
+  }
+  return set;
+}
+function isLegalFrom(fen, san) {
+  try {
+    return new Chess(fen).moves().includes(san);
+  } catch {
+    return false;
+  }
+}
+const WHITE_WINNING = /\bwhite\s+(?:is|was)\s+(?:clearly\s+|completely\s+|much\s+)?winning\b/i;
+const BLACK_WINNING = /\bblack\s+(?:is|was)\s+(?:clearly\s+|completely\s+|much\s+)?winning\b/i;
+const EVAL_MISMATCH_THRESHOLD_CP = 250;
+function checkEvalDirection(d, text) {
+  const best = d.lines[0];
+  if (!best) return null;
+  const whiteCp = d.sideToMove === "w" ? best.evalCp : -best.evalCp;
+  if (WHITE_WINNING.test(text) && whiteCp < -EVAL_MISMATCH_THRESHOLD_CP) {
+    return `Text claims White is winning, but the engine's best line favors Black (${best.evalLabel} for the side to move).`;
+  }
+  if (BLACK_WINNING.test(text) && whiteCp > EVAL_MISMATCH_THRESHOLD_CP) {
+    return `Text claims Black is winning, but the engine's best line favors White (${best.evalLabel} for the side to move).`;
+  }
+  return null;
+}
+function verifyExplanation(dossier, text) {
+  const allowlist = dossierAllowlist(dossier);
+  const issues = [];
+  for (const token of extractSanTokens(text)) {
+    if (allowlist.has(token)) continue;
+    if (isLegalFrom(dossier.fen, token)) continue;
+    issues.push(token);
+  }
+  const evalIssue = checkEvalDirection(dossier, text);
+  if (evalIssue) issues.push(evalIssue);
+  return { verified: issues.length === 0, issues };
+}
+function verifyNarrative(allSanMoves, dossiers, text) {
+  const allowlist = new Set(allSanMoves);
+  for (const d of dossiers) for (const token of dossierAllowlist(d)) allowlist.add(token);
+  const issues = [];
+  for (const token of extractSanTokens(text)) {
+    if (allowlist.has(token)) continue;
+    issues.push(token);
+  }
+  return { verified: issues.length === 0, issues };
+}
+const SYSTEM_PROMPT$2 = `You are The Chess Master Coach, a patient but demanding chess instructor. You explain a
+single chess position to a student using ONLY the facts given to you: the FEN, recent moves, and the engine's
+lines. Never invent a move, evaluation, or line that isn't shown to you — if you want to discuss what a side
+should do, use one of the given engine lines.
+
+Write 2-4 short sentences: what the position calls for, why the top engine line works, and — if a mistake was
+just played — concretely what it allowed and what to check next time. Practical, concrete, board-oriented.
+No engine jargon like "depth" or "nodes". Output plain text only, no markdown, no move-number-only lists.`;
+function findCached(gameId, ply, model) {
+  const row = getDb().prepare(
+    `SELECT * FROM annotations WHERE game_id = ? AND ply = ? AND kind = 'explain' AND model = ? ORDER BY created_at DESC LIMIT 1`
+  ).get(gameId, ply, model);
+  return row ? rowToAnnotation(row) : null;
+}
+function rowToAnnotation(row) {
+  return {
+    id: row.id,
+    gameId: row.game_id,
+    ply: row.ply ?? null,
+    kind: row.kind,
+    text: row.text,
+    model: row.model,
+    verified: Boolean(row.verified),
+    createdAt: row.created_at
+  };
+}
+async function explainPosition(gameId, ply) {
+  const settings = getSettings();
+  const model = settings.aiConfig.model || settings.aiConfig.mode;
+  const cached = findCached(gameId, ply, model);
+  if (cached) return { text: cached.text, verified: cached.verified, cached: true, model };
+  const dossier = buildPositionDossier(gameId, ply, settings.ratingCurrent - 150, settings.ratingCurrent + 150);
+  if (!dossier) throw new Error("No engine analysis available for this position yet. Analyze the game first.");
+  if (dossier.lines.length === 0) throw new Error("No engine lines available for this position.");
+  const prompt = formatDossierForPrompt(dossier);
+  let text = await chat({ system: SYSTEM_PROMPT$2, user: prompt, temperature: 0.4 });
+  let result = verifyExplanation(dossier, text);
+  if (!result.verified) {
+    const repairUser = `${prompt}
+
+Your previous explanation mentioned moves that are not among the facts above and could not be verified: ${result.issues.join("; ")}.
+Rewrite the explanation using ONLY the recent moves and engine lines listed above. Output only the corrected explanation.`;
+    text = await chat({ system: SYSTEM_PROMPT$2, user: repairUser, temperature: 0.2 });
+    result = verifyExplanation(dossier, text);
+  }
+  if (!result.verified) {
+    throw new Error(
+      "Could not produce a verified explanation for this position (the model kept naming unverifiable moves). Try again, or rely on the engine lines above."
+    );
+  }
+  const id2 = uid("ann");
+  getDb().prepare(
+    `INSERT INTO annotations (id, game_id, ply, kind, text, model, verified, created_at) VALUES (?,?,?,?,?,?,?,?)`
+  ).run(id2, gameId, ply, "explain", text, model, 1, now());
+  return { text, verified: true, cached: false, model };
+}
+const MAX_KEY_PLIES = 14;
+const SYSTEM_PROMPT$1 = `You are The Chess Master Coach, a patient but demanding chess instructor reviewing a
+student's game. You are given a set of key positions from the game, each annotated with engine facts (recent
+moves, the move actually played, and the engine's top lines). Use ONLY these facts — never invent a move,
+evaluation, or line that isn't shown to you.
+
+Write practical, concrete, board-oriented commentary. No engine jargon like "depth" or "nodes". No markdown.`;
+function selectKeyPlies(gameId) {
+  const db2 = getDb();
+  const moveCount = db2.prepare("SELECT COUNT(*) AS c FROM moves WHERE game_id = ?").get(gameId).c;
+  const mistakes = [...getMistakesForGame(gameId)].sort((a, b) => (b.evalLossCp ?? 0) - (a.evalLossCp ?? 0));
+  const set = /* @__PURE__ */ new Set();
+  for (const m of mistakes) {
+    if (set.size >= MAX_KEY_PLIES) break;
+    set.add(m.ply);
+  }
+  if (set.size < MAX_KEY_PLIES) {
+    let lastPhase = null;
+    for (let ply = 0; ply <= moveCount && set.size < MAX_KEY_PLIES; ply++) {
+      const phase = gamePhase(ply, moveCount);
+      if (phase !== lastPhase) {
+        if (lastPhase !== null) set.add(ply);
+        lastPhase = phase;
+      }
+    }
+  }
+  return [...set].sort((a, b) => a - b);
+}
+async function annotateGame(gameId, ctx) {
+  const db2 = getDb();
+  const game = db2.prepare(
+    "SELECT white_name, black_name, result, eco_code, opening_name, user_color, analysis_status FROM games WHERE id = ?"
+  ).get(gameId);
+  if (!game) throw new Error("Game not found.");
+  if (game.analysis_status !== "done") throw new Error("Analyze this game before generating AI commentary.");
+  const settings = getSettings();
+  const model = settings.aiConfig.model || settings.aiConfig.mode;
+  const targetMin = settings.ratingCurrent - 150;
+  const targetMax = settings.ratingCurrent + 150;
+  ctx.setProgress(0, 3, "Selecting key positions");
+  const plies = selectKeyPlies(gameId);
+  const bundle = buildGameDossierBundle(gameId, plies, targetMin, targetMax);
+  if (bundle.dossiers.length === 0) throw new Error("No analyzed positions available to annotate.");
+  const header = `Game: ${game.white_name ?? "?"} vs ${game.black_name ?? "?"}, result ${game.result ?? "?"}${game.eco_code ? `, opening ${openingLabel({ openingName: game.opening_name, ecoCode: game.eco_code })}` : ""}. The user played ${game.user_color}.`;
+  const positionsText = bundle.dossiers.map((d, i) => `--- Position ${i + 1} (ply ${d.ply}) ---
+${formatDossierForPrompt(d)}`).join("\n\n");
+  const user = `${header}
+
+Below are ${bundle.dossiers.length} key positions from this game, each with engine facts. Using ONLY the moves and
+evaluations shown for each position, write:
+1. "narrative": whole-game commentary (3-5 short paragraphs separated by blank lines) covering the opening, the
+   turning point(s), a brief note per phase, ending with "Three things to remember:" followed by three concrete,
+   concise lessons.
+2. "moves": for EACH position listed above, a 1-2 sentence comment on what mattered there, keyed by its exact ply
+   number.
+
+${positionsText}
+
+Output a single JSON object: { "narrative": string, "moves": [{ "ply": number, "text": string }, ...] } with one
+moves entry per position above. Output ONLY the JSON object.`;
+  ctx.setProgress(1, 3, "Generating commentary");
+  let rawText = await chat({ system: SYSTEM_PROMPT$1, user, expectJson: true, temperature: 0.4 });
+  let parsed = parseJsonLoose(rawText);
+  const dossierByPly = new Map(bundle.dossiers.map((d) => [d.ply, d]));
+  const verifyAll = (p) => {
+    const narrativeIssues2 = p?.narrative ? verifyNarrative(bundle.allSanMoves, bundle.dossiers, p.narrative).issues : [];
+    const moveIssues2 = /* @__PURE__ */ new Map();
+    for (const m of p?.moves ?? []) {
+      const d = dossierByPly.get(m.ply);
+      if (!d) continue;
+      const r = verifyExplanation(d, m.text);
+      if (!r.verified) moveIssues2.set(m.ply, r.issues);
+    }
+    return { narrativeIssues: narrativeIssues2, moveIssues: moveIssues2 };
+  };
+  let { narrativeIssues, moveIssues } = verifyAll(parsed);
+  if (parsed && (narrativeIssues.length > 0 || moveIssues.size > 0)) {
+    const issueLines = [];
+    if (narrativeIssues.length) issueLines.push(`- narrative mentioned unverifiable moves: ${narrativeIssues.join("; ")}`);
+    for (const [ply, issues] of moveIssues) {
+      issueLines.push(`- move comment for ply ${ply} mentioned unverifiable moves: ${issues.join("; ")}`);
+    }
+    const repairUser = `${user}
+
+Your previous JSON mentioned moves that are not among the given facts:
+${issueLines.join("\n")}
+
+Rewrite, using ONLY moves shown in each position's facts above. Output the corrected JSON object only.`;
+    ctx.setProgress(2, 3, "Repairing commentary");
+    rawText = await chat({ system: SYSTEM_PROMPT$1, user: repairUser, expectJson: true, temperature: 0.2 });
+    const repaired = parseJsonLoose(rawText);
+    if (repaired) {
+      parsed = repaired;
+      ({ narrativeIssues, moveIssues } = verifyAll(parsed));
+    }
+  }
+  db2.prepare(`DELETE FROM annotations WHERE game_id = ? AND kind IN ('move','narrative')`).run(gameId);
+  const insert = db2.prepare(
+    `INSERT INTO annotations (id, game_id, ply, kind, text, model, verified, created_at) VALUES (?,?,?,?,?,?,?,?)`
+  );
+  let narrativeGenerated = false;
+  if (parsed?.narrative && narrativeIssues.length === 0) {
+    insert.run(uid("ann"), gameId, null, "narrative", parsed.narrative, model, 1, now());
+    narrativeGenerated = true;
+  }
+  const mistakesByPly = new Map(getMistakesForGame(gameId).map((m) => [m.ply, m]));
+  let moveCount = 0;
+  for (const m of parsed?.moves ?? []) {
+    if (!dossierByPly.has(m.ply)) continue;
+    if (!moveIssues.has(m.ply)) {
+      insert.run(uid("ann"), gameId, m.ply, "move", m.text, model, 1, now());
+      moveCount++;
+      continue;
+    }
+    const mistake = mistakesByPly.get(m.ply);
+    if (mistake) {
+      const fallbackText = [mistake.humanSummary, mistake.whyBad].filter(Boolean).join(" ");
+      insert.run(uid("ann"), gameId, m.ply, "move", fallbackText, "template", 1, now());
+      moveCount++;
+    }
+  }
+  ctx.setProgress(3, 3, "Done");
+  broadcast({ type: "annotations:changed", payload: { gameId } });
+  return { moveCount, narrativeGenerated };
+}
+function getAnnotationsForGame(gameId) {
+  const db2 = getDb();
+  const narrativeRow = db2.prepare(`SELECT * FROM annotations WHERE game_id = ? AND kind = 'narrative' ORDER BY created_at DESC LIMIT 1`).get(gameId);
+  const moveRows = db2.prepare(`SELECT * FROM annotations WHERE game_id = ? AND kind = 'move' ORDER BY ply ASC`).all(gameId);
+  return {
+    narrative: narrativeRow ? rowToAnnotation(narrativeRow) : null,
+    moves: moveRows.map(rowToAnnotation)
+  };
+}
+const GAMES_CONSIDERED = 20;
+const ALLOWED_TAGS = ["tactics", "opening", "endgame", "calculation", "strategy", "time-management"];
+function recentAnalyzedGameIds() {
+  const rows = getDb().prepare(`SELECT id FROM games WHERE analysis_status = 'done' ORDER BY ended_at DESC LIMIT ?`).all(GAMES_CONSIDERED);
+  return rows.map((r) => r.id);
+}
+function linkedExerciseIds(tag) {
+  const rows = getDb().prepare(
+    `SELECT id FROM exercises WHERE tags_json LIKE ? ORDER BY (due_at IS NULL), due_at ASC LIMIT 3`
+  ).all(`%"${tag}"%`);
+  return rows.map((r) => r.id);
+}
+function computeCandidateWeaknesses(gameIds) {
+  if (gameIds.length === 0) return [];
+  const placeholders = gameIds.map(() => "?").join(",");
+  const rows = getDb().prepare(
+    `SELECT m.ply, m.eval_loss_cp, m.human_summary, m.training_action, g.white_name, g.black_name, g.user_color, g.ended_at
+       FROM mistakes m JOIN games g ON g.id = m.game_id
+       WHERE m.game_id IN (${placeholders}) AND m.confidence != 'low'
+       ORDER BY m.eval_loss_cp DESC`
+  ).all(...gameIds);
+  const groups = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    let g = groups.get(r.training_action);
+    if (!g) {
+      g = { count: 0, totalLossCp: 0, evidence: [] };
+      groups.set(r.training_action, g);
+    }
+    g.count++;
+    g.totalLossCp += r.eval_loss_cp ?? 0;
+    if (g.evidence.length < 3) {
+      const opponent = (r.user_color === "white" ? r.black_name : r.white_name) ?? "opponent";
+      const date = r.ended_at ? r.ended_at.slice(0, 10) : "unknown date";
+      g.evidence.push(`vs ${opponent} (${date}), move ${Math.ceil(r.ply / 2)}: ${r.human_summary}`);
+    }
+  }
+  const sorted = [...groups.entries()].sort((a, b) => b[1].totalLossCp - a[1].totalLossCp);
+  return sorted.map(([tag, g], i) => ({
+    tag,
+    count: g.count,
+    totalLossCp: g.totalLossCp,
+    impact: i === 0 ? "high" : i <= 2 ? "medium" : "low",
+    evidence: g.evidence,
+    linkedExerciseIds: linkedExerciseIds(tag)
+  }));
+}
+const SYSTEM_PROMPT = `You are The Chess Master Coach. You are given a set of ALREADY-COMPUTED, factual weakness
+candidates from a student's real recent games (tag, how often it recurs, and real evidence quotes) — you have no
+access to the raw games yourself. Never invent evidence, opponents, or game details; only what is listed exists.
+Your job is to prioritize, explain motivatingly, and build a practical 7-day plan from these given facts.`;
+function verifyReportShape(parsed, candidatesByTag) {
+  const issues = [];
+  if (!parsed || typeof parsed !== "object") return { verified: false, issues: ["Response was not a JSON object."] };
+  const p = parsed;
+  if (typeof p.summary !== "string" || !p.summary.trim()) issues.push('missing "summary"');
+  if (!Array.isArray(p.topWeaknesses) || p.topWeaknesses.length === 0) {
+    issues.push('missing "topWeaknesses"');
+  } else {
+    for (const w of p.topWeaknesses) {
+      if (!w || typeof w.tag !== "string" || !candidatesByTag.has(w.tag)) {
+        issues.push(`weakness tag "${w?.tag}" is not one of the given candidate tags`);
+      }
+      if (!w || typeof w.recommendedAction !== "string" || !w.recommendedAction.trim()) {
+        issues.push(`weakness "${w?.tag}" is missing "recommendedAction"`);
+      }
+    }
+  }
+  const allowedTaskTypes = /* @__PURE__ */ new Set([...ALLOWED_TAGS, "game-review", "opening-review", "lesson", "rest"]);
+  if (!Array.isArray(p.sevenDayPlan) || p.sevenDayPlan.length === 0) {
+    issues.push('missing "sevenDayPlan"');
+  } else {
+    for (const day of p.sevenDayPlan) {
+      if (typeof day.day !== "number") issues.push('a plan day is missing a numeric "day"');
+      if (!Array.isArray(day.tasks)) {
+        issues.push(`day ${day.day} is missing "tasks"`);
+        continue;
+      }
+      for (const t of day.tasks) {
+        if (!t || typeof t.type !== "string" || !allowedTaskTypes.has(t.type)) {
+          issues.push(`task type "${t?.type}" on day ${day.day} is not an allowed type`);
+        }
+        if (!t || typeof t.minutes !== "number") issues.push(`a task on day ${day.day} is missing "minutes"`);
+      }
+    }
+  }
+  return { verified: issues.length === 0, issues };
+}
+async function generateCoachReport() {
+  const gameIds = recentAnalyzedGameIds();
+  const candidates = computeCandidateWeaknesses(gameIds);
+  if (candidates.length === 0) {
+    throw new Error("No mistakes found in your analyzed games yet — analyze a few games first.");
+  }
+  const top = candidates.slice(0, 8);
+  const candidatesByTag = new Map(top.map((c) => [c.tag, c]));
+  const settings = getSettings();
+  const model = settings.aiConfig.model || settings.aiConfig.mode;
+  const candidatesText = top.map(
+    (c, i) => `${i + 1}. tag: "${c.tag}" — recurs ${c.count} time(s), impact: ${c.impact}
+   evidence:
+${c.evidence.map((e) => `   - ${e}`).join("\n")}`
+  ).join("\n\n");
+  const user = `Games considered: ${gameIds.length} most recently analyzed games.
+
+Candidate weaknesses (already computed from real mistakes — do not add, remove, or rename tags):
+${candidatesText}
+
+Task:
+- Pick the 3-5 most important weaknesses (prefer high impact and recurring ones). Use the EXACT tag spelling given.
+- For each chosen weakness, write "recommendedAction": one or two concrete, motivating sentences on what to do about it.
+- Write "summary": 2-3 sentences, an honest but encouraging overall assessment.
+- Write "sevenDayPlan": 7 entries (day 1-7), each with 1-3 tasks. Each task has "type" (one of the chosen weakness
+  tags, or "game-review", "opening-review", "lesson", "rest"), "title" (short, specific, actionable), and "minutes"
+  (realistic, 10-30).
+
+Output a single JSON object: { "summary": string, "topWeaknesses": [{ "tag": string, "recommendedAction": string }],
+"sevenDayPlan": [{ "day": number, "tasks": [{ "type": string, "title": string, "minutes": number }] }] }.
+Output ONLY the JSON object.`;
+  let rawText = await chat({ system: SYSTEM_PROMPT, user, expectJson: true, temperature: 0.4 });
+  let parsed = parseJsonLoose(rawText);
+  let check = verifyReportShape(parsed, candidatesByTag);
+  if (!check.verified) {
+    const repairUser = `${user}
+
+Your previous JSON had problems:
+${check.issues.map((i) => `- ${i}`).join("\n")}
+
+Fix ALL problems, using ONLY the candidate tags listed above. Output the corrected JSON object only.`;
+    rawText = await chat({ system: SYSTEM_PROMPT, user: repairUser, expectJson: true, temperature: 0.2 });
+    parsed = parseJsonLoose(rawText);
+    check = verifyReportShape(parsed, candidatesByTag);
+  }
+  if (!check.verified || !parsed) {
+    throw new Error(`Could not produce a valid coach report (${check.issues.slice(0, 3).join("; ")}).`);
+  }
+  const topWeaknesses = parsed.topWeaknesses.map((w) => {
+    const cand = candidatesByTag.get(w.tag);
+    return {
+      tag: w.tag,
+      evidence: cand.evidence,
+      impact: cand.impact,
+      recommendedAction: w.recommendedAction,
+      linkedExerciseIds: cand.linkedExerciseIds
+    };
+  });
+  const sevenDayPlan = parsed.sevenDayPlan.map((d) => ({
+    day: d.day,
+    tasks: d.tasks.map((t) => ({ type: t.type, title: t.title, minutes: t.minutes }))
+  }));
+  const record = {
+    id: uid("coach"),
+    summary: parsed.summary,
+    topWeaknesses,
+    sevenDayPlan,
+    gamesConsidered: gameIds.length,
+    model,
+    createdAt: now()
+  };
+  getDb().prepare(
+    `INSERT INTO coach_reports (id, summary, report_json, games_considered, model, created_at) VALUES (?,?,?,?,?,?)`
+  ).run(
+    record.id,
+    record.summary,
+    JSON.stringify({ topWeaknesses: record.topWeaknesses, sevenDayPlan: record.sevenDayPlan }),
+    record.gamesConsidered,
+    record.model,
+    record.createdAt
+  );
+  return record;
+}
+function getLatestCoachReport() {
+  const row = getDb().prepare(`SELECT * FROM coach_reports ORDER BY created_at DESC LIMIT 1`).get();
+  if (!row) return null;
+  const parsed = JSON.parse(row.report_json);
+  return {
+    id: row.id,
+    summary: row.summary,
+    topWeaknesses: parsed.topWeaknesses,
+    sevenDayPlan: parsed.sevenDayPlan,
+    gamesConsidered: row.games_considered,
+    model: row.model,
+    createdAt: row.created_at
+  };
 }
 function handle(channel, fn) {
   electron.ipcMain.handle(channel, async (_event, args) => {
@@ -13384,6 +14507,16 @@ function queueAnalysis(gameIds, profileId) {
     jobIds.push(job.id);
   }
   return jobIds;
+}
+function queueAnnotation(gameId) {
+  const db2 = getDb();
+  const game = db2.prepare("SELECT analysis_status FROM games WHERE id = ?").get(gameId);
+  if (!game) throw new Error("Game not found.");
+  if (game.analysis_status !== "done") throw new Error("Analyze this game before generating AI commentary.");
+  const existing = listJobs(200).find(
+    (j) => j.type === "annotate-game" && j.payload?.gameId === gameId && (j.status === "pending" || j.status === "running")
+  );
+  return existing ?? enqueueJob("annotate-game", { gameId });
 }
 function registerIpc() {
   handle("settings:get", () => getSettings());
@@ -13455,6 +14588,13 @@ function registerIpc() {
   handle("eval:position", (fen) => {
     liveEval.evaluate(fen);
   });
+  handle("play:start", async (args) => {
+    await liveEval.setEnabled(false);
+    return playVsEngine.start(args.fen, args.userColor, args.eloTarget);
+  });
+  handle("play:move", (uci) => playVsEngine.userMove(uci));
+  handle("play:stop", () => playVsEngine.stop());
+  handle("play:status", () => playVsEngine.status());
   handle(
     "analysis:queue",
     (args) => queueAnalysis(args.gameIds, args.profileId)
@@ -13490,8 +14630,17 @@ function registerIpc() {
   );
   handle("repertoire:delete", (id2) => deleteNode(id2));
   handle("plan:today", () => computeTodayPlan());
+  handle("stats:overview", () => getStatsOverview());
+  handle("clipboard:write", (text) => {
+    electron.clipboard.writeText(text);
+  });
   handle("ai:outline", (args) => generateOutline(args));
   handle("ai:generateLesson", (args) => generateLesson(args));
+  handle("ai:explainPosition", (args) => explainPosition(args.gameId, args.ply));
+  handle("ai:annotateGame", (gameId) => queueAnnotation(gameId));
+  handle("ai:annotationsForGame", (gameId) => getAnnotationsForGame(gameId));
+  handle("ai:coachReport:generate", () => generateCoachReport());
+  handle("ai:coachReport:latest", () => getLatestCoachReport());
 }
 const API = "https://api.chess.com/pub";
 async function fetchJson(url) {
@@ -13565,7 +14714,7 @@ async function importChessCom(args, ctx) {
       try {
         const parsed = parsePgnGame(g.pgn);
         const gameId = g.url ? g.url.split("/").pop() ?? null : null;
-        const outcome = insertGame({
+        const outcome2 = insertGame({
           parsed,
           sourcePlatform: "chesscom",
           sourceGameId: gameId,
@@ -13581,9 +14730,9 @@ async function importChessCom(args, ctx) {
             knownUsername: username
           }
         });
-        if (outcome.status === "inserted") {
+        if (outcome2.status === "inserted") {
           result.gamesImported++;
-          result.createdGameIds.push(outcome.gameId);
+          result.createdGameIds.push(outcome2.gameId);
         } else {
           result.duplicatesSkipped++;
         }
@@ -13609,7 +14758,7 @@ function handleGame(g, result, knownUsername) {
   }
   try {
     const parsed = parsePgnGame(g.pgn);
-    const outcome = insertGame({
+    const outcome2 = insertGame({
       parsed,
       sourcePlatform: "lichess",
       sourceGameId: g.id,
@@ -13627,9 +14776,9 @@ function handleGame(g, result, knownUsername) {
         knownUsername
       }
     });
-    if (outcome.status === "inserted") {
+    if (outcome2.status === "inserted") {
       result.gamesImported++;
-      result.createdGameIds.push(outcome.gameId);
+      result.createdGameIds.push(outcome2.gameId);
     } else {
       result.duplicatesSkipped++;
     }
@@ -13730,6 +14879,7 @@ function resourcesDir() {
 }
 function registerJobHandlers() {
   registerJobHandler("analyze-game", analyzeGameJob);
+  registerJobHandler("annotate-game", (payload, ctx) => annotateGame(payload.gameId, ctx));
   registerJobHandler("import", async (payload, ctx) => {
     const p = payload;
     let result;
@@ -13809,6 +14959,7 @@ electron.app.whenReady().then(async () => {
   try {
     backfillUserColors();
     backfillMissingAccuracy();
+    backfillRepertoireLabels();
   } catch (e) {
     console.warn("Backfill failed on startup:", e);
   }
@@ -13817,7 +14968,7 @@ electron.app.whenReady().then(async () => {
   recoverJobs();
   void tick();
   if (isSmokeTest) {
-    void Promise.resolve().then(() => require("./smoke-BVaQIo6q.js")).then(async ({ runSmokeTest }) => {
+    void Promise.resolve().then(() => require("./smoke-rPAsBpR5.js")).then(async ({ runSmokeTest }) => {
       const ok = await runSmokeTest().catch((e) => {
         console.error("Smoke test crashed:", e);
         return false;
@@ -13840,8 +14991,10 @@ electron.app.on("window-all-closed", () => {
 });
 electron.app.on("will-quit", () => {
   void Promise.resolve().then(() => liveEval$1).then(({ liveEval: liveEval2 }) => liveEval2.shutdown());
+  void Promise.resolve().then(() => play).then(({ playVsEngine: playVsEngine2 }) => playVsEngine2.stop());
 });
 exports.Chess = Chess;
+exports.OPENINGS = OPENINGS;
 exports.addLineFromGame = addLineFromGame;
 exports.addOpeningLine = addOpeningLine;
 exports.attemptNode = attemptNode;
@@ -13856,3 +15009,5 @@ exports.listNodes = listNodes;
 exports.parsePgnGame = parsePgnGame;
 exports.splitPgn = splitPgn;
 exports.validateLesson = validateLesson;
+exports.verifyExplanation = verifyExplanation;
+exports.verifyNarrative = verifyNarrative;

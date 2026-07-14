@@ -74,11 +74,11 @@ export function computeTodayPlan(): TodayPlan {
     )
     .all(since) as Array<{ tag: string; count: number; impact: number }>
   const weaknesses = weaknessRows.map((w) => {
-    const pawns = Math.round(w.impact / 100)
+    const avgPawns = w.count > 0 ? w.impact / 100 / w.count : 0
     return {
       tag: w.tag,
       count: w.count,
-      evidence: `${w.count} mistake${w.count === 1 ? '' : 's'} costing ~${pawns} pawn${pawns === 1 ? '' : 's'} in your recent games`
+      evidence: `${w.count} mistake${w.count === 1 ? '' : 's'} across your recent games, avg ${avgPawns.toFixed(1)} pawns each`
     }
   })
 

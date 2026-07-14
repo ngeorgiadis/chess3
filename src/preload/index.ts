@@ -39,6 +39,10 @@ const CHANNELS = [
   'eval:setEnabled',
   'eval:status',
   'eval:position',
+  'play:start',
+  'play:move',
+  'play:stop',
+  'play:status',
   'analysis:queue',
   'analysis:cancel',
   'analysis:forGame',
@@ -65,8 +69,15 @@ const CHANNELS = [
   'repertoire:setPriority',
   'repertoire:delete',
   'plan:today',
+  'stats:overview',
+  'clipboard:write',
   'ai:outline',
-  'ai:generateLesson'
+  'ai:generateLesson',
+  'ai:explainPosition',
+  'ai:annotateGame',
+  'ai:annotationsForGame',
+  'ai:coachReport:generate',
+  'ai:coachReport:latest'
 ] as const
 
 const api: Record<string, unknown> = {}

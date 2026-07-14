@@ -5,12 +5,18 @@ import type {
   AppSettings,
   AnalysisSummary,
   BackfillResult,
+  CoachReportRecord,
   EngineProfileRecord,
   EngineRecord,
   ExerciseRecord,
+  GameAnnotations,
   GameFilters,
   GameRecord,
   LiveEvalStatus,
+  PlayGameState,
+  PlayMoveResult,
+  PlayStartArgs,
+  StatsOverview,
   ImportChessComArgs,
   ImportLichessArgs,
   ImportPgnArgs,
@@ -72,6 +78,12 @@ export const api = {
     status: () => raw['eval:status']() as Promise<LiveEvalStatus>,
     position: (fen: string) => raw['eval:position'](fen) as Promise<void>
   },
+  play: {
+    start: (args: PlayStartArgs) => raw['play:start'](args) as Promise<PlayMoveResult>,
+    move: (uci: string) => raw['play:move'](uci) as Promise<PlayMoveResult>,
+    stop: () => raw['play:stop']() as Promise<void>,
+    status: () => raw['play:status']() as Promise<PlayGameState | null>
+  },
   analysis: {
     queue: (gameIds: string[], profileId?: string) =>
       raw['analysis:queue']({ gameIds, profileId }) as Promise<string[]>,
@@ -123,6 +135,12 @@ export const api = {
   plan: {
     today: () => raw['plan:today']() as Promise<TodayPlan>
   },
+  stats: {
+    overview: () => raw['stats:overview']() as Promise<StatsOverview>
+  },
+  clipboard: {
+    write: (text: string) => raw['clipboard:write'](text) as Promise<void>
+  },
   ai: {
     outline: (args: AiOutlineArgs) => raw['ai:outline'](args) as Promise<string>,
     generateLesson: (args: AiGenerateArgs) =>
@@ -131,7 +149,20 @@ export const api = {
         rawText: string
         report: LessonValidationReport | null
         error?: string
-      }>
+      }>,
+    explainPosition: (gameId: string, ply: number) =>
+      raw['ai:explainPosition']({ gameId, ply }) as Promise<{
+        text: string
+        verified: boolean
+        cached: boolean
+        model: string
+      }>,
+    annotateGame: (gameId: string) => raw['ai:annotateGame'](gameId) as Promise<JobRecord>,
+    annotationsForGame: (gameId: string) => raw['ai:annotationsForGame'](gameId) as Promise<GameAnnotations>,
+    coachReport: {
+      generate: () => raw['ai:coachReport:generate']() as Promise<CoachReportRecord>,
+      latest: () => raw['ai:coachReport:latest']() as Promise<CoachReportRecord | null>
+    }
   },
   onEvent: raw.onEvent
 }

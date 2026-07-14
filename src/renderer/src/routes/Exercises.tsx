@@ -1,9 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { useAppEvent } from '../store'
 import { PuzzleBoard } from '../components/PuzzleBoard'
 import { playSound } from '../sound'
+import { formatDue } from '../format'
 import type { ExerciseRecord } from '@shared/types'
+
+/** Trailing run of correct-in-a-row from the most recent result backwards. */
+function currentStreak(results: Array<'correct' | 'missed'>): number {
+  let streak = 0
+  for (let i = results.length - 1; i >= 0; i--) {
+    if (results[i] !== 'correct') break
+    streak++
+  }
+  return streak
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const m = Math.floor(totalSeconds / 60)
+  const s = totalSeconds % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
 
 export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.Element {
   const [all, setAll] = useState<ExerciseRecord[]>([])
@@ -14,6 +32,8 @@ export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.El
   /** Per-puzzle outcome so far this session, in order — drives the progress dots. */
   const [results, setResults] = useState<Array<'correct' | 'missed'>>([])
   const [attempted, setAttempted] = useState(false)
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const sessionStartRef = useRef(0)
 
   const refresh = useCallback(() => {
     void api.exercises.list().then(setAll)
@@ -35,6 +55,8 @@ export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.El
     setSolvedCount(0)
     setResults([])
     setAttempted(false)
+    sessionStartRef.current = Date.now()
+    setElapsedMs(0)
   }
 
   async function startSession(): Promise<void> {
@@ -60,6 +82,13 @@ export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.El
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionJustFinished])
 
+  // live elapsed-time ticker while a session is in progress
+  useEffect(() => {
+    if (!session || sessionJustFinished) return
+    const t = setInterval(() => setElapsedMs(Date.now() - sessionStartRef.current), 1000)
+    return () => clearInterval(t)
+  }, [session, sessionJustFinished])
+
   if (session) {
     const current = session[idx]
     if (!current) {
@@ -68,7 +97,8 @@ export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.El
           <h1>Exercises</h1>
           <div className="card" style={{ textAlign: 'center', padding: 36 }}>
             <p>
-              Session complete: <b>{solvedCount}</b> of {session.length} solved on the first try.
+              Session complete: <b>{solvedCount}</b> of {session.length} solved on the first try
+              {elapsedMs > 0 ? ` in ${formatElapsed(elapsedMs)}` : ''}.
             </p>
             <div className="row" style={{ justifyContent: 'center', gap: 4, margin: '10px 0' }}>
               {results.map((r, i) => (
@@ -98,25 +128,32 @@ export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.El
         <p className="subtitle">
           Puzzle {idx + 1} of {session.length} · {current.title}
         </p>
-        <div className="row" style={{ gap: 4, marginBottom: 10 }}>
-          {session.map((_, i) => (
-            <span
-              key={i}
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background:
-                  i < results.length
-                    ? results[i] === 'correct'
-                      ? 'var(--accent-strong)'
-                      : 'var(--danger)'
-                    : i === idx
-                      ? 'var(--info)'
-                      : 'var(--border)'
-              }}
-            />
-          ))}
+        <div className="row" style={{ gap: 14, marginBottom: 10, justifyContent: 'space-between', flexWrap: 'wrap' }}>
+          <div className="row" style={{ gap: 4 }}>
+            {session.map((_, i) => (
+              <span
+                key={i}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background:
+                    i < results.length
+                      ? results[i] === 'correct'
+                        ? 'var(--accent-strong)'
+                        : 'var(--danger)'
+                      : i === idx
+                        ? 'var(--info)'
+                        : 'var(--border)'
+                }}
+              />
+            ))}
+          </div>
+          <div className="row muted" style={{ gap: 12, fontSize: 12.5 }}>
+            {currentStreak(results) > 1 && <span>🔥 {currentStreak(results)} streak</span>}
+            <span>{solvedCount} solved</span>
+            <span className="mono">{formatElapsed(elapsedMs)}</span>
+          </div>
         </div>
         <PuzzleBoard
           key={current.id}
@@ -216,7 +253,7 @@ export function Exercises({ initialTag }: { initialTag?: string }): React.JSX.El
                   ))}
                 </td>
                 <td className="muted">{'★'.repeat(e.difficulty)}</td>
-                <td className="muted">{e.dueAt ? e.dueAt.slice(0, 10) : '—'}</td>
+                <td className="muted">{formatDue(e.dueAt)}</td>
                 <td>
                   <button className="small" onClick={(ev) => { ev.stopPropagation(); void beginSession([e]) }}>
                     Solve

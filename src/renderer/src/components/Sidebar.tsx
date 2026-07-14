@@ -6,6 +6,7 @@ import type { LiveEvalUpdate, PvLine } from '@shared/types'
 const NAV: Array<{ route: Route; label: string; icon: string }> = [
   { route: { name: 'today' }, label: 'Today', icon: '☀' },
   { route: { name: 'games' }, label: 'Games', icon: '♟' },
+  { route: { name: 'insights' }, label: 'Insights', icon: '📈' },
   { route: { name: 'openings' }, label: 'Openings', icon: '⇶' },
   { route: { name: 'lessons' }, label: 'Lessons', icon: '📖' },
   { route: { name: 'exercises' }, label: 'Exercises', icon: '🧩' },
@@ -159,6 +160,9 @@ export function Sidebar(): React.JSX.Element {
       </div>
       <div className="status-line">
         AI: {settings?.aiConfig.mode === 'manual' ? 'manual mode' : (settings?.aiConfig.model || 'configured')}
+      </div>
+      <div className="status-line" title="Press ? anywhere to see keyboard shortcuts">
+        Press <span className="mono">?</span> for shortcuts
       </div>
     </nav>
   )

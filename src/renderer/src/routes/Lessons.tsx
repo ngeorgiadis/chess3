@@ -44,9 +44,21 @@ export function Lessons(): React.JSX.Element {
           <div key={course.id} className="card" style={{ marginBottom: 16 }}>
             <h3>{cj.title}</h3>
             <p className="muted">{cj.summary}</p>
-            {cj.modules.map((mod) => (
+            {cj.modules.map((mod) => {
+              const known = mod.lessonRefs.filter((ref) => lessonsById.has(ref))
+              const completed = known.filter((ref) => progress.get(ref)?.status === 'completed')
+              return (
               <div key={mod.id} style={{ marginBottom: 10 }}>
-                <b>{mod.title}</b> <span className="muted">— {mod.summary}</span>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div>
+                    <b>{mod.title}</b> <span className="muted">— {mod.summary}</span>
+                  </div>
+                  {known.length > 0 && (
+                    <span className={`badge ${completed.length === known.length ? 'green' : ''}`}>
+                      {completed.length}/{known.length} ✓
+                    </span>
+                  )}
+                </div>
                 <div className="col" style={{ gap: 4, marginTop: 6 }}>
                   {mod.lessonRefs.map((ref) => {
                     const lesson = lessonsById.get(ref)
@@ -70,7 +82,8 @@ export function Lessons(): React.JSX.Element {
                   })}
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )
       })}

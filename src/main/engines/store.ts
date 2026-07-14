@@ -1,6 +1,7 @@
 import { getDb, uid, now, logEvent } from '../db'
 import { verifyEngine } from './uci'
 import { broadcast } from '../events'
+import { getSettings } from '../settings'
 import type { EngineProfileRecord, EngineRecord, EngineUseCase } from '@shared/types'
 
 function rowToEngine(row: Record<string, unknown>): EngineRecord {
@@ -108,6 +109,23 @@ export function getProfile(id: string): EngineProfileRecord | null {
     | Record<string, unknown>
     | undefined
   return row ? rowToProfile(row) : null
+}
+
+/** Resolve the engine to use when none is explicitly chosen: default profile's engine, else first available. */
+export function resolveDefaultEngineRecord(): { executablePath: string; name: string } {
+  const settings = getSettings()
+  if (settings.defaultProfileId) {
+    const profile = getProfile(settings.defaultProfileId)
+    const eng = profile ? getEngine(profile.engineId) : null
+    if (eng && eng.status === 'available') return { executablePath: eng.executablePath, name: eng.name }
+  }
+  for (const profile of listProfiles()) {
+    const eng = getEngine(profile.engineId)
+    if (eng && eng.status === 'available') return { executablePath: eng.executablePath, name: eng.name }
+  }
+  const first = listEngines().find((e) => e.status === 'available')
+  if (first) return { executablePath: first.executablePath, name: first.name }
+  throw new Error('No UCI engine available. Add one on the Engines screen first.')
 }
 
 export function saveProfile(profile: EngineProfileRecord): EngineProfileRecord {

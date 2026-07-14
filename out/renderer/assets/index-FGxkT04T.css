@@ -558,6 +558,13 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
 label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
 
 .app-shell { display: flex; flex: 1; min-height: 0; }
+.main-col { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+
+.session-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  font-size: 13px; flex-shrink: 0;
+}
 
 /* Sidebar */
 .sidebar {
@@ -635,6 +642,28 @@ table.data tr.selected td { background: var(--bg-panel); }
   border: 1px solid var(--border);
   display: block;
 }
+
+/* Severity glyph badge on the board (destination square of the last move) */
+.board-severity-badge {
+  position: absolute;
+  transform: translate(-65%, -35%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: Consolas, monospace;
+  color: #10130f;
+  border: 2px solid var(--bg-raised);
+  pointer-events: none;
+  z-index: 2;
+}
+.board-severity-badge.sev-blunder { background: var(--danger); }
+.board-severity-badge.sev-mistake { background: var(--warn); }
+.board-severity-badge.sev-inaccuracy { background: var(--info); }
 
 /* Engine best-move arrow (live eval) — distinct from user right-click annotations */
 .cm-chessboard .arrow-engine .arrow-head { fill: #2bb3a3; fill-rule: nonzero; }
