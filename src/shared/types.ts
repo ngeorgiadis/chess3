@@ -63,6 +63,9 @@ export interface ImportResult {
   duplicatesSkipped: number
   failed: Array<{ sourceRef: string; reason: string }>
   createdGameIds: string[]
+  /** Set when the fetch start was auto-derived from the latest already-imported game for this
+   *  platform+username (an incremental sync) rather than an explicit user-provided range. */
+  syncedFrom?: string | null
 }
 
 export interface ImportChessComArgs {

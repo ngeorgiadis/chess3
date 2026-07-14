@@ -7439,7 +7439,18 @@ function ResultSummary({
   onViewGames
 }) {
   const [analyzing, setAnalyzing] = reactExports.useState(false);
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `callout ${result.gamesImported > 0 ? "success" : "warn"}`, children: [
+  const upToDate = result.syncedFrom && result.gamesSeen === 0;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `callout ${upToDate ? "" : result.gamesImported > 0 ? "success" : "warn"}`, children: [
+    upToDate && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginBottom: 4 }, children: [
+      "Already up to date — no new games since ",
+      result.syncedFrom,
+      "."
+    ] }),
+    result.syncedFrom && !upToDate && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { marginBottom: 4, fontSize: 12 }, children: [
+      "Synced new games since ",
+      result.syncedFrom,
+      "."
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: result.gamesImported }),
     " games imported, ",
     /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: result.duplicatesSkipped }),
@@ -7662,7 +7673,15 @@ function ImportModal() {
       platform === "chesscom" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", children: [
           "From month",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { type: "month", value: fromMonth, onChange: (e) => setFromMonth(e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "input",
+            {
+              type: "month",
+              value: fromMonth,
+              onChange: (e) => setFromMonth(e.target.value),
+              placeholder: "auto"
+            }
+          )
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", children: [
           "To month",
@@ -7679,7 +7698,9 @@ function ImportModal() {
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", children: [
         "Fetches ",
         platform === "chesscom" ? "monthly archives sequentially from the public Chess.com API" : "a streamed NDJSON export from the Lichess API",
-        ". Only public, finished games are imported."
+        ". Only public, finished games are imported. Repeat imports sync automatically — only games newer than what you already have are fetched, unless you set ",
+        platform === "chesscom" ? 'a "From month"' : "a date range",
+        " above."
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", disabled: busy, onClick: () => void startUsernameImport(), children: "Start import" })
     ] }),

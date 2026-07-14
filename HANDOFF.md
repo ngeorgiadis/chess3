@@ -80,6 +80,34 @@ since it's a user setting change outside this task's scope). The `annotate-game`
 job-queue failure path: proper `retryable: true` error stored, no stuck state. 6 new deterministic smoke
 checks added for `verify.ts` (`npm test`), all passing; typecheck clean.
 
+### Incremental import sync (2026-07-14, branch `ux-pass-2`)
+
+Chess.com and Lichess username imports are now a real sync, not a full re-fetch every time.
+`src/main/importers/sync.ts` adds `latestSyncedGameEndedAt(platform, username)` — looks up the
+most recent `ended_at` among already-imported games for that exact `source_platform` +
+username (case-insensitive, matched against either color). Both importers use it as a *default*
+only: an explicit `fromMonth` (chess.com) or `since` (lichess) from the caller always wins, so a
+deliberate historical re-import still works unchanged.
+
+- `chesscom.ts`: defaults `fromMonth` to the boundary month (re-fetches that month, not the next
+  one, since new games may have landed in it — per-game dedup in `insertGame` is still the
+  correctness backstop for the overlap).
+- `lichess.ts`: defaults `since` to the boundary timestamp, passed straight to the API's native
+  `since` filter.
+- `ImportResult` gained `syncedFrom?: string | null` so the UI can show what happened;
+  `ImportModal.tsx`'s `ResultSummary` now shows "Synced new games since X" or, when nothing new
+  was found, "Already up to date — no new games since X" instead of a bare "0 imported" callout.
+- First-ever import for a platform+username is unaffected (no boundary yet → full history/`max`,
+  same as before).
+
+**Live-verified against the real Chess.com/Lichess APIs and this machine's real data** (not just
+typecheck/smoke): a repeat chess.com sync for a 6,551-game history dropped from 24 monthly
+archive fetches / 42s to 1 archive / ~2s (`syncedFrom: "2026-07"`) and still found the 1 genuinely
+new game. A first-ever lichess sync correctly did a full fetch (`syncedFrom: null`); the very next
+call for the same user correctly narrowed to the boundary (`syncedFrom: "2026-05-08"`,
+`gamesSeen: 0`, ~150ms). 4 new deterministic smoke checks for `latestSyncedGameEndedAt`
+(platform-scoping, case-insensitivity, unknown-username) — `npm test` passes; typecheck clean.
+
 ## Commands
 
 ```
@@ -93,8 +121,19 @@ npm run dev / npm run build && npx electron . / npm test / npm run typecheck
   generation has been observed end-to-end on this machine since the local Ollama `baseUrl` is missing `/v1`.
   Engine analysis + live eval verified live (Stockfish 17 registered on this machine).
 - A5 (interactive "why not Nf5?" chat with engine tools) not built — parked per `AI_COMMENTARY_AGENTS_PROPOSAL.md`.
-- No packaging config (electron-builder) — app runs via `npx electron .` only.
+- **Windows packaging** (2026-07-14): `electron-builder` config in `package.json` (`"build"` key) + `npm run dist:win`
+  or `scripts/package-windows.ps1` produce an NSIS installer and a portable exe in `.\release\`. No native deps to
+  rebuild (`node:sqlite` is a Node builtin) and no runtime `node_modules` needed — electron-vite bundles all
+  dependencies into `out/**/*`, so `files` is just that plus `package.json`. `resources/` (lesson/course seeds) ships
+  via `extraResources` outside the asar, matching the existing dev/prod split in `resourcesDir()`
+  (`src/main/index.ts`). No code-signing cert configured — electron-builder auto-signs with a local test
+  certificate on this machine; a real release would need a proper Authenticode cert or Windows SmartScreen will
+  warn on first run. Live-verified: built both targets, then launched the unpacked exe directly (CDP) — booted
+  clean, seed resources loaded from the correct packaged path, real user data (games/reviews/AI cards) rendered
+  with zero console errors. No custom app icon yet (falls back to Electron's default) — add `build/icon.ico` and a
+  `win.icon` entry in `package.json` when branding is ready.
 - Board: no keyboard move entry; no blunder heatmap. Live eval toggle is session-only (off after restart) by design.
 - Engine profiles editable only via default set; no benchmark UI. FTS5 search not wired.
 - Importers: Chess.com single-game URL unsupported by design (public API limitation) — month import instead.
+  Repeat username imports now sync incrementally — see "Incremental import sync" above.
 - No git repo initialized.

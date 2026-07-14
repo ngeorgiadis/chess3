@@ -1,7 +1,8 @@
 // Self-test run with `electron . --smoke-test` against a temp data dir.
 // Covers the non-UI acceptance checks from 10_ACCEPTANCE_TESTS.md that need no network/engine.
 import { getDb } from './db'
-import { importPgnText, splitPgn, parsePgnGame } from './importers/pgn'
+import { importPgnText, splitPgn, parsePgnGame, insertGame } from './importers/pgn'
+import { latestSyncedGameEndedAt } from './importers/sync'
 import { validateLesson } from './lessons/validate'
 import { listLessons, getProgress } from './lessons/store'
 import { computeTodayPlan } from './plan/study-plan'
@@ -210,6 +211,22 @@ export async function runSmokeTest(): Promise<boolean> {
   check('narrative verifier accepts real game moves', narrativeOk.verified, JSON.stringify(narrativeOk.issues))
   const narrativeBad = verifyNarrative(['e4', 'e5'], [sampleDossier], 'Black later delivered Qxh7# to finish the game.')
   check('narrative verifier flags an unlisted move', !narrativeBad.verified, JSON.stringify(narrativeBad.issues))
+
+  // 10. Import sync boundary (chesscom/lichess incremental import)
+  const syncPgn = `[White "SyncUser"]\n[Black "opponent"]\n[Result "1-0"]\n\n1. e4 e5 2. Nf3 1-0`
+  insertGame({
+    parsed: parsePgnGame(syncPgn),
+    sourcePlatform: 'chesscom',
+    sourceGameId: 'sync-test-1',
+    overrides: { endedAt: '2026-06-15T12:00:00.000Z' }
+  })
+  check(
+    'sync boundary found for matching platform+username',
+    latestSyncedGameEndedAt('chesscom', 'syncuser') === '2026-06-15T12:00:00.000Z'
+  )
+  check('sync boundary lookup is case-insensitive', latestSyncedGameEndedAt('chesscom', 'SYNCUSER') !== null)
+  check('sync boundary is scoped to the platform', latestSyncedGameEndedAt('lichess', 'syncuser') === null)
+  check('sync boundary is null for an unknown username', latestSyncedGameEndedAt('chesscom', 'nobody-imported-this') === null)
 
   console.log(failures === 0 ? 'SMOKE TEST PASSED' : `SMOKE TEST FAILED (${failures} failures)`)
   return failures === 0
