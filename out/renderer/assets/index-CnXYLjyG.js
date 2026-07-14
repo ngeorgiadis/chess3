@@ -7110,6 +7110,9 @@ const api = {
   stats: {
     overview: () => raw["stats:overview"]()
   },
+  clipboard: {
+    write: (text) => raw["clipboard:write"](text)
+  },
   ai: {
     outline: (args) => raw["ai:outline"](args),
     generateLesson: (args) => raw["ai:generateLesson"](args)
@@ -7414,6 +7417,11 @@ function Sidebar() {
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "status-line", children: [
       "AI: ",
       settings?.aiConfig.mode === "manual" ? "manual mode" : settings?.aiConfig.model || "configured"
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "status-line", title: "Press ? anywhere to see keyboard shortcuts", children: [
+      "Press ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono", children: "?" }),
+      " for shortcuts"
     ] })
   ] });
 }
@@ -15417,6 +15425,23 @@ function Review({ gameId }) {
     return () => window.removeEventListener("keydown", handler);
   }, [moves.length]);
   reactExports.useEffect(() => {
+    const handler = (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "[") {
+        const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly);
+        if (prevMs) setCurrentPly(prevMs.ply);
+      } else if (e.key === "]") {
+        const next = mistakes.find((m) => m.ply > currentPly);
+        if (next) setCurrentPly(next.ply);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        setAutoplay((a) => !a);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [mistakes, currentPly]);
+  reactExports.useEffect(() => {
     setRevealed(false);
     setTryMode(false);
     setTryFeedback(null);
@@ -15637,7 +15662,21 @@ function Review({ gameId }) {
           ),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(Math.min(moves.length, currentPly + 1)), children: "▶" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(moves.length), children: "⏭" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${autoplay ? "primary" : ""}`, onClick: () => setAutoplay((a) => !a), children: autoplay ? "⏸ Pause" : "▶ Autoplay" })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: `small ${autoplay ? "primary" : ""}`, onClick: () => setAutoplay((a) => !a), children: autoplay ? "⏸ Pause" : "▶ Autoplay" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "small",
+              title: "Copy this position's FEN to the clipboard",
+              onClick: () => {
+                void api.clipboard.write(fen).then(() => {
+                  setNotice("FEN copied to clipboard.");
+                  setTimeout(() => setNotice((n) => n === "FEN copied to clipboard." ? null : n), 2e3);
+                });
+              },
+              children: "Copy FEN"
+            }
+          )
         ] }),
         analyses.length > 1 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: 6 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(EvalGraph, { analyses, mistakes, currentPly, onSelect: setCurrentPly }) })
       ] }) }),
@@ -17377,16 +17416,26 @@ function Settings() {
   const [draft, setDraft] = reactExports.useState(null);
   const [saved, setSaved] = reactExports.useState(false);
   const [backfillNotice, setBackfillNotice] = reactExports.useState(null);
+  const lastSavedRef = reactExports.useRef(null);
+  const debounceRef = reactExports.useRef(null);
+  const savedFlashRef = reactExports.useRef(null);
   reactExports.useEffect(() => {
-    if (settings) setDraft(JSON.parse(JSON.stringify(settings)));
+    if (settings) {
+      const cloned = JSON.parse(JSON.stringify(settings));
+      setDraft(cloned);
+      lastSavedRef.current = cloned;
+    }
   }, [settings]);
   if (!draft) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
-  async function save() {
-    const identityChanged = draft.chesscomUsername !== settings?.chesscomUsername || draft.lichessUsername !== settings?.lichessUsername || draft.displayName !== settings?.displayName;
-    await api.settings.set(draft);
+  async function persist(next) {
+    const prev = lastSavedRef.current;
+    const identityChanged = prev != null && (next.chesscomUsername !== prev.chesscomUsername || next.lichessUsername !== prev.lichessUsername || next.displayName !== prev.displayName);
+    await api.settings.set(next);
+    lastSavedRef.current = next;
     await refreshSettings();
     setSaved(true);
-    setTimeout(() => setSaved(false), 2e3);
+    if (savedFlashRef.current) clearTimeout(savedFlashRef.current);
+    savedFlashRef.current = setTimeout(() => setSaved(false), 1500);
     if (identityChanged) {
       const result = await api.identity.backfill();
       if (result.updatedGames > 0) {
@@ -17396,6 +17445,13 @@ function Settings() {
       }
     }
   }
+  function flush() {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+      if (draft) void persist(draft);
+    }
+  }
   function runSetupWizard() {
     try {
       window.localStorage.removeItem(ONBOARDING_DONE_KEY);
@@ -17403,16 +17459,31 @@ function Settings() {
     }
     setOnboardingOpen(true);
   }
-  const set = (key, value) => setDraft({ ...draft, [key]: value });
+  const set = (key, value, opts) => {
+    const next = { ...draft, [key]: value };
+    setDraft(next);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (opts?.immediate) {
+      debounceRef.current = null;
+      void persist(next);
+    } else {
+      debounceRef.current = setTimeout(() => void persist(next), 600);
+    }
+  };
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { maxWidth: 720 }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Settings" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Profile, platforms, AI provider, and privacy. Everything is stored locally." }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", alignItems: "baseline" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { children: "Settings" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "subtitle", children: "Profile, platforms, AI provider, and privacy. Everything is stored locally and saved as you go." })
+      ] }),
+      saved && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge green", children: "Saved ✓" })
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Profile and rating goal" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { flex: 1, minWidth: 180 }, children: [
           "Display name",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.displayName, onChange: (e) => set("displayName", e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.displayName, onChange: (e) => set("displayName", e.target.value), onBlur: flush })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { width: 130 }, children: [
           "Current rating",
@@ -17421,7 +17492,8 @@ function Settings() {
             {
               type: "number",
               value: draft.ratingCurrent,
-              onChange: (e) => set("ratingCurrent", parseInt(e.target.value) || 1500)
+              onChange: (e) => set("ratingCurrent", parseInt(e.target.value) || 1500),
+              onBlur: flush
             }
           )
         ] }),
@@ -17432,7 +17504,8 @@ function Settings() {
             {
               type: "number",
               value: draft.ratingGoal,
-              onChange: (e) => set("ratingGoal", parseInt(e.target.value) || 1800)
+              onChange: (e) => set("ratingGoal", parseInt(e.target.value) || 1800),
+              onBlur: flush
             }
           )
         ] })
@@ -17449,23 +17522,22 @@ function Settings() {
               "select",
               {
                 value: draft.boardTheme,
-                onChange: (e) => set("boardTheme", e.target.value),
+                onChange: (e) => set("boardTheme", e.target.value, { immediate: true }),
                 children: BOARD_THEMES.map((t) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: t.value, children: t.label }, t.value))
               }
             )
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", children: [
             "Piece set",
-            /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: draft.pieceSet, onChange: (e) => set("pieceSet", e.target.value), children: PIECE_SETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p.value, children: p.label }, p.value)) })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: draft.pieceSet, onChange: (e) => set("pieceSet", e.target.value, { immediate: true }), children: PIECE_SETS.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: p.value, children: p.label }, p.value)) })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "The preview updates immediately; click “Save settings” to apply everywhere." }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "row", style: { gap: 6, marginTop: 6 }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(
               "input",
               {
                 type: "checkbox",
                 checked: draft.soundEnabled,
-                onChange: (e) => set("soundEnabled", e.target.checked)
+                onChange: (e) => set("soundEnabled", e.target.checked, { immediate: true })
               }
             ),
             "Sound effects (moves, puzzle feedback, session complete)"
@@ -17491,11 +17563,11 @@ function Settings() {
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { flexWrap: "wrap" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { flex: 1, minWidth: 180 }, children: [
           "Chess.com username",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.chesscomUsername, onChange: (e) => set("chesscomUsername", e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.chesscomUsername, onChange: (e) => set("chesscomUsername", e.target.value), onBlur: flush })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { flex: 1, minWidth: 180 }, children: [
           "Lichess username",
-          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.lichessUsername, onChange: (e) => set("lichessUsername", e.target.value) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: draft.lichessUsername, onChange: (e) => set("lichessUsername", e.target.value), onBlur: flush })
         ] })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "field", style: { marginTop: 8 }, children: [
@@ -17505,6 +17577,7 @@ function Settings() {
           {
             value: draft.userAgentContact,
             onChange: (e) => set("userAgentContact", e.target.value),
+            onBlur: flush,
             placeholder: "you@example.com"
           }
         )
@@ -17520,7 +17593,7 @@ function Settings() {
             "select",
             {
               value: draft.aiConfig.mode,
-              onChange: (e) => set("aiConfig", { ...draft.aiConfig, mode: e.target.value }),
+              onChange: (e) => set("aiConfig", { ...draft.aiConfig, mode: e.target.value }, { immediate: true }),
               children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "manual", children: "Manual (no AI)" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: "openai-compatible", children: "OpenAI-compatible API" }),
@@ -17537,6 +17610,7 @@ function Settings() {
               {
                 value: draft.aiConfig.baseUrl,
                 onChange: (e) => set("aiConfig", { ...draft.aiConfig, baseUrl: e.target.value }),
+                onBlur: flush,
                 placeholder: draft.aiConfig.mode === "local-http" ? "http://localhost:11434/v1" : "https://api.openai.com/v1"
               }
             )
@@ -17550,7 +17624,8 @@ function Settings() {
                 {
                   type: "password",
                   value: draft.aiConfig.apiKey,
-                  onChange: (e) => set("aiConfig", { ...draft.aiConfig, apiKey: e.target.value })
+                  onChange: (e) => set("aiConfig", { ...draft.aiConfig, apiKey: e.target.value }),
+                  onBlur: flush
                 }
               )
             ] }),
@@ -17561,6 +17636,7 @@ function Settings() {
                 {
                   value: draft.aiConfig.model,
                   onChange: (e) => set("aiConfig", { ...draft.aiConfig, model: e.target.value }),
+                  onBlur: flush,
                   placeholder: "model name"
                 }
               )
@@ -17582,11 +17658,7 @@ function Settings() {
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginBottom: 8 }, children: "Re-run the first-time setup steps (identity, import, engine)." }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: runSetupWizard, children: "Run setup wizard again" })
     ] }),
-    backfillNotice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout success", style: { marginBottom: 14 }, children: backfillNotice }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: () => void save(), children: "Save settings" }),
-      saved && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "badge green", children: "Saved" })
-    ] })
+    backfillNotice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout success", style: { marginBottom: 14 }, children: backfillNotice })
   ] });
 }
 function SessionBanner() {
@@ -17612,12 +17684,48 @@ function SessionBanner() {
     ] })
   ] });
 }
+const SHORTCUT_GROUPS = [
+  { title: "Global", items: [["?", "Show/hide this shortcuts help"]] },
+  {
+    title: "Review",
+    items: [
+      ["← / →", "Step one move back / forward"],
+      ["Home / End", "Jump to the start / end of the game"],
+      ["[ / ]", "Previous / next critical moment"],
+      ["Space", "Toggle autoplay"]
+    ]
+  },
+  { title: "Opening practice", items: [["Enter / Space", "Advance after answering a position"]] }
+];
+function ShortcutsOverlay({ onClose }) {
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "modal-backdrop", onClick: onClose, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "modal", style: { width: 420 }, onClick: (e) => e.stopPropagation(), children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { children: "Keyboard shortcuts" }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 14 }, children: SHORTCUT_GROUPS.map((g) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { marginBottom: 6, fontWeight: 600 }, children: g.title }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 4 }, children: g.items.map(([key, desc]) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mono badge", children: key }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "muted", children: desc })
+      ] }, key)) })
+    ] }, g.title)) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "row", style: { marginTop: 16 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "primary", onClick: onClose, children: "Close" }) })
+  ] }) });
+}
 function App() {
   const route = useStore((s) => s.route);
   const importModalOpen = useStore((s) => s.importModalOpen);
   const onboardingOpen = useStore((s) => s.onboardingOpen);
   const setOnboardingOpen = useStore((s) => s.setOnboardingOpen);
   const settings = useStore((s) => s.settings);
+  const [shortcutsOpen, setShortcutsOpen] = reactExports.useState(false);
+  reactExports.useEffect(() => {
+    const handler = (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "?") setShortcutsOpen((o) => !o);
+      else if (e.key === "Escape") setShortcutsOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
   reactExports.useEffect(() => {
     if (!settings) return;
     let done = false;
@@ -17673,7 +17781,8 @@ function App() {
       /* @__PURE__ */ jsxRuntimeExports.jsx("main", { className: "main-content", children: content })
     ] }),
     importModalOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ImportModal, {}),
-    onboardingOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(Onboarding, {})
+    onboardingOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(Onboarding, {}),
+    shortcutsOpen && /* @__PURE__ */ jsxRuntimeExports.jsx(ShortcutsOverlay, { onClose: () => setShortcutsOpen(false) })
   ] });
 }
 wireEvents();

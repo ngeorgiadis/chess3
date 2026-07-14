@@ -136,6 +136,9 @@ export const api = {
   stats: {
     overview: () => raw['stats:overview']() as Promise<StatsOverview>
   },
+  clipboard: {
+    write: (text: string) => raw['clipboard:write'](text) as Promise<void>
+  },
   ai: {
     outline: (args: AiOutlineArgs) => raw['ai:outline'](args) as Promise<string>,
     generateLesson: (args: AiGenerateArgs) =>

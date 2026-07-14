@@ -14078,6 +14078,9 @@ function registerIpc() {
   handle("repertoire:delete", (id2) => deleteNode(id2));
   handle("plan:today", () => computeTodayPlan());
   handle("stats:overview", () => getStatsOverview());
+  handle("clipboard:write", (text) => {
+    electron.clipboard.writeText(text);
+  });
   handle("ai:outline", (args) => generateOutline(args));
   handle("ai:generateLesson", (args) => generateLesson(args));
 }

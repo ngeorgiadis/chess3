@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
 import { Board } from '../components/Board'
@@ -28,22 +28,34 @@ export function Settings(): React.JSX.Element {
   const [draft, setDraft] = useState<AppSettings | null>(null)
   const [saved, setSaved] = useState(false)
   const [backfillNotice, setBackfillNotice] = useState<string | null>(null)
+  /** The last settings snapshot actually persisted — diffed against to detect identity changes. */
+  const lastSavedRef = useRef<AppSettings | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const savedFlashRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (settings) setDraft(JSON.parse(JSON.stringify(settings)) as AppSettings)
+    if (settings) {
+      const cloned = JSON.parse(JSON.stringify(settings)) as AppSettings
+      setDraft(cloned)
+      lastSavedRef.current = cloned
+    }
   }, [settings])
 
   if (!draft) return <div className="muted">Loading…</div>
 
-  async function save(): Promise<void> {
+  async function persist(next: AppSettings): Promise<void> {
+    const prev = lastSavedRef.current
     const identityChanged =
-      draft!.chesscomUsername !== settings?.chesscomUsername ||
-      draft!.lichessUsername !== settings?.lichessUsername ||
-      draft!.displayName !== settings?.displayName
-    await api.settings.set(draft!)
+      prev != null &&
+      (next.chesscomUsername !== prev.chesscomUsername ||
+        next.lichessUsername !== prev.lichessUsername ||
+        next.displayName !== prev.displayName)
+    await api.settings.set(next)
+    lastSavedRef.current = next
     await refreshSettings()
     setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    if (savedFlashRef.current) clearTimeout(savedFlashRef.current)
+    savedFlashRef.current = setTimeout(() => setSaved(false), 1500)
     if (identityChanged) {
       const result = await api.identity.backfill()
       if (result.updatedGames > 0) {
@@ -52,6 +64,15 @@ export function Settings(): React.JSX.Element {
             (result.reclassifiedGames > 0 ? ` and refreshed mistakes for ${result.reclassifiedGames} of them.` : '.')
         )
       }
+    }
+  }
+
+  /** Commit any pending debounced edit immediately — used on blur so tabbing away saves right away. */
+  function flush(): void {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+      if (draft) void persist(draft)
     }
   }
 
@@ -64,13 +85,28 @@ export function Settings(): React.JSX.Element {
     setOnboardingOpen(true)
   }
 
-  const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void =>
-    setDraft({ ...draft, [key]: value })
+  /** Auto-saves on every change: immediately for discrete controls, debounced for free-text inputs. */
+  const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K], opts?: { immediate?: boolean }): void => {
+    const next = { ...draft, [key]: value }
+    setDraft(next)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (opts?.immediate) {
+      debounceRef.current = null
+      void persist(next)
+    } else {
+      debounceRef.current = setTimeout(() => void persist(next), 600)
+    }
+  }
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <h1>Settings</h1>
-      <p className="subtitle">Profile, platforms, AI provider, and privacy. Everything is stored locally.</p>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <div>
+          <h1>Settings</h1>
+          <p className="subtitle">Profile, platforms, AI provider, and privacy. Everything is stored locally and saved as you go.</p>
+        </div>
+        {saved && <span className="badge green">Saved ✓</span>}
+      </div>
 
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>Profile and rating goal</h3>
@@ -78,7 +114,7 @@ export function Settings(): React.JSX.Element {
           <div className="row" style={{ flexWrap: 'wrap' }}>
             <label className="field" style={{ flex: 1, minWidth: 180 }}>
               Display name
-              <input value={draft.displayName} onChange={(e) => set('displayName', e.target.value)} />
+              <input value={draft.displayName} onChange={(e) => set('displayName', e.target.value)} onBlur={flush} />
             </label>
             <label className="field" style={{ width: 130 }}>
               Current rating
@@ -86,6 +122,7 @@ export function Settings(): React.JSX.Element {
                 type="number"
                 value={draft.ratingCurrent}
                 onChange={(e) => set('ratingCurrent', parseInt(e.target.value) || 1500)}
+                onBlur={flush}
               />
             </label>
             <label className="field" style={{ width: 130 }}>
@@ -94,6 +131,7 @@ export function Settings(): React.JSX.Element {
                 type="number"
                 value={draft.ratingGoal}
                 onChange={(e) => set('ratingGoal', parseInt(e.target.value) || 1800)}
+                onBlur={flush}
               />
             </label>
           </div>
@@ -111,7 +149,7 @@ export function Settings(): React.JSX.Element {
               Board colors
               <select
                 value={draft.boardTheme}
-                onChange={(e) => set('boardTheme', e.target.value as BoardColorScheme)}
+                onChange={(e) => set('boardTheme', e.target.value as BoardColorScheme, { immediate: true })}
               >
                 {BOARD_THEMES.map((t) => (
                   <option key={t.value} value={t.value}>
@@ -122,7 +160,7 @@ export function Settings(): React.JSX.Element {
             </label>
             <label className="field">
               Piece set
-              <select value={draft.pieceSet} onChange={(e) => set('pieceSet', e.target.value as PieceSet)}>
+              <select value={draft.pieceSet} onChange={(e) => set('pieceSet', e.target.value as PieceSet, { immediate: true })}>
                 {PIECE_SETS.map((p) => (
                   <option key={p.value} value={p.value}>
                     {p.label}
@@ -130,12 +168,11 @@ export function Settings(): React.JSX.Element {
                 ))}
               </select>
             </label>
-            <div className="muted">The preview updates immediately; click “Save settings” to apply everywhere.</div>
             <label className="row" style={{ gap: 6, marginTop: 6 }}>
               <input
                 type="checkbox"
                 checked={draft.soundEnabled}
-                onChange={(e) => set('soundEnabled', e.target.checked)}
+                onChange={(e) => set('soundEnabled', e.target.checked, { immediate: true })}
               />
               Sound effects (moves, puzzle feedback, session complete)
             </label>
@@ -162,11 +199,11 @@ export function Settings(): React.JSX.Element {
         <div className="row" style={{ flexWrap: 'wrap' }}>
           <label className="field" style={{ flex: 1, minWidth: 180 }}>
             Chess.com username
-            <input value={draft.chesscomUsername} onChange={(e) => set('chesscomUsername', e.target.value)} />
+            <input value={draft.chesscomUsername} onChange={(e) => set('chesscomUsername', e.target.value)} onBlur={flush} />
           </label>
           <label className="field" style={{ flex: 1, minWidth: 180 }}>
             Lichess username
-            <input value={draft.lichessUsername} onChange={(e) => set('lichessUsername', e.target.value)} />
+            <input value={draft.lichessUsername} onChange={(e) => set('lichessUsername', e.target.value)} onBlur={flush} />
           </label>
         </div>
         <label className="field" style={{ marginTop: 8 }}>
@@ -174,6 +211,7 @@ export function Settings(): React.JSX.Element {
           <input
             value={draft.userAgentContact}
             onChange={(e) => set('userAgentContact', e.target.value)}
+            onBlur={flush}
             placeholder="you@example.com"
           />
         </label>
@@ -190,7 +228,9 @@ export function Settings(): React.JSX.Element {
             Mode
             <select
               value={draft.aiConfig.mode}
-              onChange={(e) => set('aiConfig', { ...draft.aiConfig, mode: e.target.value as AppSettings['aiConfig']['mode'] })}
+              onChange={(e) =>
+                set('aiConfig', { ...draft.aiConfig, mode: e.target.value as AppSettings['aiConfig']['mode'] }, { immediate: true })
+              }
             >
               <option value="manual">Manual (no AI)</option>
               <option value="openai-compatible">OpenAI-compatible API</option>
@@ -204,6 +244,7 @@ export function Settings(): React.JSX.Element {
                 <input
                   value={draft.aiConfig.baseUrl}
                   onChange={(e) => set('aiConfig', { ...draft.aiConfig, baseUrl: e.target.value })}
+                  onBlur={flush}
                   placeholder={
                     draft.aiConfig.mode === 'local-http' ? 'http://localhost:11434/v1' : 'https://api.openai.com/v1'
                   }
@@ -216,6 +257,7 @@ export function Settings(): React.JSX.Element {
                     type="password"
                     value={draft.aiConfig.apiKey}
                     onChange={(e) => set('aiConfig', { ...draft.aiConfig, apiKey: e.target.value })}
+                    onBlur={flush}
                   />
                 </label>
                 <label className="field" style={{ flex: 1, minWidth: 200 }}>
@@ -223,6 +265,7 @@ export function Settings(): React.JSX.Element {
                   <input
                     value={draft.aiConfig.model}
                     onChange={(e) => set('aiConfig', { ...draft.aiConfig, model: e.target.value })}
+                    onBlur={flush}
                     placeholder="model name"
                   />
                 </label>
@@ -256,13 +299,6 @@ export function Settings(): React.JSX.Element {
           {backfillNotice}
         </div>
       )}
-
-      <div className="row">
-        <button className="primary" onClick={() => void save()}>
-          Save settings
-        </button>
-        {saved && <span className="badge green">Saved</span>}
-      </div>
     </div>
   )
 }

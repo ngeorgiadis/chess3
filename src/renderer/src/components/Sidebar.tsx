@@ -161,6 +161,9 @@ export function Sidebar(): React.JSX.Element {
       <div className="status-line">
         AI: {settings?.aiConfig.mode === 'manual' ? 'manual mode' : (settings?.aiConfig.model || 'configured')}
       </div>
+      <div className="status-line" title="Press ? anywhere to see keyboard shortcuts">
+        Press <span className="mono">?</span> for shortcuts
+      </div>
     </nav>
   )
 }

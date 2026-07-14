@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { ipcMain, dialog, BrowserWindow, clipboard } from 'electron'
 import fs from 'node:fs'
 import { getDb } from './db'
 import { getSettings, setSettings } from './settings'
@@ -227,6 +227,13 @@ export function registerIpc(): void {
 
   // ---- Stats ----
   handle('stats:overview', () => getStatsOverview())
+
+  // ---- Clipboard ----
+  // Electron's clipboard module, not navigator.clipboard.writeText, so copies still work
+  // when the window/document doesn't currently have focus (e.g. right after a click).
+  handle('clipboard:write', (text: string) => {
+    clipboard.writeText(text)
+  })
 
   // ---- AI ----
   handle('ai:outline', (args: AiOutlineArgs) => generateOutline(args))

@@ -70,6 +70,7 @@ const CHANNELS = [
   'repertoire:delete',
   'plan:today',
   'stats:overview',
+  'clipboard:write',
   'ai:outline',
   'ai:generateLesson'
 ] as const

@@ -215,6 +215,26 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
     return () => window.removeEventListener('keydown', handler)
   }, [moves.length])
 
+  // keyboard shortcuts that depend on live mistake/ply state: [ / ] jump between critical
+  // moments, Space toggles autoplay
+  useEffect(() => {
+    const handler = (e: KeyboardEvent): void => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.key === '[') {
+        const prevMs = [...mistakes].reverse().find((m) => m.ply < currentPly)
+        if (prevMs) setCurrentPly(prevMs.ply)
+      } else if (e.key === ']') {
+        const next = mistakes.find((m) => m.ply > currentPly)
+        if (next) setCurrentPly(next.ply)
+      } else if (e.key === ' ') {
+        e.preventDefault()
+        setAutoplay((a) => !a)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [mistakes, currentPly])
+
   useEffect(() => {
     setRevealed(false)
     setTryMode(false)
@@ -473,6 +493,18 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                 <button className="small" onClick={() => setCurrentPly(moves.length)}>⏭</button>
                 <button className={`small ${autoplay ? 'primary' : ''}`} onClick={() => setAutoplay((a) => !a)}>
                   {autoplay ? '⏸ Pause' : '▶ Autoplay'}
+                </button>
+                <button
+                  className="small"
+                  title="Copy this position's FEN to the clipboard"
+                  onClick={() => {
+                    void api.clipboard.write(fen).then(() => {
+                      setNotice('FEN copied to clipboard.')
+                      setTimeout(() => setNotice((n) => (n === 'FEN copied to clipboard.' ? null : n)), 2000)
+                    })
+                  }}
+                >
+                  Copy FEN
                 </button>
               </div>
               {analyses.length > 1 && (
