@@ -7115,7 +7115,14 @@ const api = {
   },
   ai: {
     outline: (args) => raw["ai:outline"](args),
-    generateLesson: (args) => raw["ai:generateLesson"](args)
+    generateLesson: (args) => raw["ai:generateLesson"](args),
+    explainPosition: (gameId, ply) => raw["ai:explainPosition"]({ gameId, ply }),
+    annotateGame: (gameId) => raw["ai:annotateGame"](gameId),
+    annotationsForGame: (gameId) => raw["ai:annotationsForGame"](gameId),
+    coachReport: {
+      generate: () => raw["ai:coachReport:generate"](),
+      latest: () => raw["ai:coachReport:latest"]()
+    }
   },
   onEvent: raw.onEvent
 };
@@ -14961,6 +14968,103 @@ const TIME_CLASS_LABEL = {
   daily: "Daily",
   unknown: "Other"
 };
+const WEAKNESS_LABEL = {
+  tactics: "Tactical awareness",
+  opening: "Opening preparation",
+  endgame: "Endgame technique",
+  calculation: "Calculation depth",
+  strategy: "Strategic judgment",
+  "time-management": "Time management"
+};
+function impactBadgeClass(impact) {
+  return impact === "high" ? "red" : impact === "medium" ? "yellow" : "blue";
+}
+function CoachReportCard() {
+  const settings = useStore((s) => s.settings);
+  const navigate = useStore((s) => s.navigate);
+  const aiConfigured = settings != null && settings.aiConfig.mode !== "manual";
+  const [report, setReport] = reactExports.useState(null);
+  const [loading, setLoading] = reactExports.useState(false);
+  const [error, setError] = reactExports.useState(null);
+  reactExports.useEffect(() => {
+    void api.ai.coachReport.latest().then(setReport);
+  }, []);
+  async function generate() {
+    setLoading(true);
+    setError(null);
+    try {
+      setReport(await api.ai.coachReport.generate());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 14 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", alignItems: "flex-start" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { style: { margin: 0 }, children: "🤖 Coach report" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { margin: "4px 0 0" }, children: "A cross-game weakness diagnosis and 7-day plan, built from your recently analyzed games." })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          className: "small primary",
+          disabled: !aiConfigured || loading,
+          title: !aiConfigured ? "Configure an AI provider in Settings first" : void 0,
+          onClick: () => void generate(),
+          children: loading ? "Generating…" : report ? "Refresh" : "Generate coach report"
+        }
+      )
+    ] }),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginTop: 10 }, children: error }),
+    !aiConfigured && !report && /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "muted", style: { marginTop: 10, marginBottom: 0 }, children: [
+      "Configure an AI provider in",
+      " ",
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => navigate({ name: "settings" }), children: "Settings" }),
+      " ",
+      "to unlock coach reports."
+    ] }),
+    report && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { marginTop: 10 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { marginTop: 0 }, children: report.summary }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "muted", style: { fontSize: 12, marginBottom: 12 }, children: [
+        "Based on ",
+        report.gamesConsidered,
+        " recently analyzed game(s) · generated ",
+        report.createdAt.slice(0, 10)
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 12 }, children: report.topWeaknesses.map((w) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 8, alignItems: "center" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `badge ${impactBadgeClass(w.impact)}`, children: w.impact }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: WEAKNESS_LABEL[w.tag] ?? w.tag })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { margin: "4px 0" }, children: w.recommendedAction }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", style: { fontSize: 12 }, children: w.evidence.map((e, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+          "· ",
+          e
+        ] }, i)) })
+      ] }, w.tag)) }),
+      report.sevenDayPlan.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { style: { marginTop: 16, marginBottom: 8 }, children: "7-day plan" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6 }, children: report.sevenDayPlan.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { gap: 8, alignItems: "flex-start" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted mono", style: { width: 46, flexShrink: 0 }, children: [
+            "Day ",
+            d.day
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: d.tasks.map((t, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+            t.title,
+            " ",
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "muted", children: [
+              "(",
+              t.minutes,
+              " min)"
+            ] })
+          ] }, i)) })
+        ] }, d.day)) })
+      ] })
+    ] })
+  ] });
+}
 function LineChart({
   points,
   yOf,
@@ -15106,6 +15210,7 @@ function Insights() {
         ] }, label)) })
       ] })
     ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(CoachReportCard, {}),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "Your openings" }),
       stats.openings.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "No openings recorded yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "data", children: [
@@ -15392,8 +15497,11 @@ function AccuracySummary({ game, mistakes }) {
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: summaryBits.length > 0 ? summaryBits.join(" · ") : "No flagged mistakes" })
   ] }) });
 }
+const EMPTY_ANNOTATIONS = { narrative: null, moves: [] };
 function Review({ gameId }) {
   const navigate = useStore((s) => s.navigate);
+  const settings = useStore((s) => s.settings);
+  const jobs = useStore((s) => s.jobs);
   const [game, setGame] = reactExports.useState(null);
   const [moves, setMoves] = reactExports.useState([]);
   const [analyses, setAnalyses] = reactExports.useState([]);
@@ -15407,12 +15515,44 @@ function Review({ gameId }) {
   const [previewRank, setPreviewRank] = reactExports.useState(null);
   const [previewIdx, setPreviewIdx] = reactExports.useState(0);
   const [playFen, setPlayFen] = reactExports.useState(null);
+  const [annotations, setAnnotations] = reactExports.useState(EMPTY_ANNOTATIONS);
+  const [explain, setExplain] = reactExports.useState(null);
+  const [explainLoading, setExplainLoading] = reactExports.useState(false);
+  const [explainError, setExplainError] = reactExports.useState(null);
+  const aiConfigured = settings != null && settings.aiConfig.mode !== "manual";
+  const annotateJob = jobs.find(
+    (j) => j.type === "annotate-game" && j.payload?.gameId === gameId && (j.status === "pending" || j.status === "running")
+  );
   reactExports.useEffect(() => {
     void api.games.get(gameId).then(setGame);
     void api.games.moves(gameId).then(setMoves);
     void api.analysis.forGame(gameId).then(setAnalyses);
     void api.analysis.mistakes(gameId).then(setMistakes);
+    void api.ai.annotationsForGame(gameId).then(setAnnotations);
   }, [gameId]);
+  useAppEvent(["annotations:changed"], () => {
+    void api.ai.annotationsForGame(gameId).then(setAnnotations);
+  });
+  async function annotateThisGame() {
+    try {
+      await api.ai.annotateGame(gameId);
+      setNotice("Annotating this game — the coach’s summary will appear above when ready.");
+    } catch (e) {
+      setNotice(e.message);
+    }
+  }
+  async function explainCurrentPosition() {
+    setExplainLoading(true);
+    setExplainError(null);
+    try {
+      const res = await api.ai.explainPosition(gameId, currentPly);
+      setExplain({ ply: currentPly, text: res.text });
+    } catch (e) {
+      setExplainError(e.message);
+    } finally {
+      setExplainLoading(false);
+    }
+  }
   reactExports.useEffect(() => {
     const handler = (e) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -15447,6 +15587,8 @@ function Review({ gameId }) {
     setTryFeedback(null);
     setPreviewRank(null);
     setPreviewIdx(0);
+    setExplain(null);
+    setExplainError(null);
   }, [currentPly]);
   reactExports.useEffect(() => {
     if (!autoplay) return;
@@ -15459,6 +15601,7 @@ function Review({ gameId }) {
   }, [autoplay, currentPly, moves.length]);
   const mistakeByPly = reactExports.useMemo(() => new Map(mistakes.map((m) => [m.ply, m])), [mistakes]);
   const analysisByPly = reactExports.useMemo(() => new Map(analyses.map((a) => [a.ply, a])), [analyses]);
+  const annotationByPly = reactExports.useMemo(() => new Map(annotations.moves.map((a) => [a.ply, a])), [annotations.moves]);
   if (!game) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "muted", children: "Loading…" });
   const baseFen = currentPly === 0 ? moves[0]?.fenBefore ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" : moves[currentPly - 1].fenAfter;
   const baseLastMove = currentPly > 0 ? { from: moves[currentPly - 1].uci.slice(0, 2), to: moves[currentPly - 1].uci.slice(2, 4) } : null;
@@ -15563,6 +15706,22 @@ function Review({ gameId }) {
     ] }),
     analyses.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout warn", style: { marginBottom: 12 }, children: "This game has no engine analysis yet. Queue it from the Games screen to see mistakes and coaching." }),
     analyses.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(AccuracySummary, { game, mistakes }),
+    analyses.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { marginBottom: 12 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between", alignItems: "flex-start" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { style: { margin: 0 }, children: "🤖 Coach's summary" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "button",
+          {
+            className: "small",
+            disabled: !aiConfigured || Boolean(annotateJob),
+            title: !aiConfigured ? "Configure an AI provider in Settings first" : void 0,
+            onClick: () => void annotateThisGame(),
+            children: annotateJob ? "Annotating…" : annotations.narrative ? "Re-annotate this game" : "Annotate this game"
+          }
+        )
+      ] }),
+      annotations.narrative ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "col", style: { gap: 6, marginTop: 6 }, children: annotations.narrative.text.split("\n\n").filter((p) => p.trim()).map((p, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { margin: 0 }, children: p }, i)) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { marginTop: 6, marginBottom: 0 }, children: aiConfigured ? "Generate an AI narrative of this game's opening, turning points, and key lessons." : "Configure an AI provider in Settings to generate a coach summary of this game." })
+    ] }),
     notice && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout", style: { marginBottom: 12 }, children: notice }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 16 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", style: { width: 220, flexShrink: 0, maxHeight: 500, overflowY: "auto" }, children: [
@@ -15721,6 +15880,24 @@ function Review({ gameId }) {
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setCurrentPly(mistakeHere.ply - 1), children: "Go to position before" }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "small", onClick: () => setPlayFen(fenAtPly(mistakeHere.ply - 1)), children: "Play it out from here" })
           ] })
+        ] }),
+        positionAnalysis && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { justifyContent: "space-between" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { style: { margin: 0 }, children: "AI coach" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "small",
+                disabled: !aiConfigured || explainLoading,
+                title: !aiConfigured ? "Configure an AI provider in Settings first" : void 0,
+                onClick: () => void explainCurrentPosition(),
+                children: explainLoading ? "Thinking…" : "Explain this position"
+              }
+            )
+          ] }),
+          explainError && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "callout error", style: { marginTop: 8 }, children: explainError }),
+          explain && explain.ply === currentPly ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { marginTop: 8, marginBottom: 0 }, children: explain.text }) : annotationByPly.get(currentPly) && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { marginTop: 8, marginBottom: 0 }, children: annotationByPly.get(currentPly).text }),
+          !aiConfigured && !annotationByPly.get(currentPly) && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "muted", style: { marginTop: 8, marginBottom: 0, fontSize: 12 }, children: "Configure an AI provider in Settings to get explanations for individual positions." })
         ] }),
         (revealed || mistakeHere || !upcomingMistake) && bestHere && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "What the engine saw" }),

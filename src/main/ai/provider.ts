@@ -45,3 +45,25 @@ export async function chat(args: ChatArgs): Promise<string> {
   if (!content) throw new Error('AI provider returned an empty response.')
   return content
 }
+
+/** Tolerant JSON parse: strips markdown fences, else falls back to the outermost {...} span. */
+export function parseJsonLoose(text: string): unknown | null {
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    const start = cleaned.indexOf('{')
+    const end = cleaned.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1))
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+}

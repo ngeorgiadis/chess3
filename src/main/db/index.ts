@@ -235,6 +235,30 @@ const MIGRATIONS: string[] = [
   ALTER TABLE games ADD COLUMN accuracy_black REAL;
   ALTER TABLE repertoire_nodes ADD COLUMN opening_name TEXT;
   ALTER TABLE repertoire_nodes ADD COLUMN line_name TEXT;
+  `,
+  // v3 — AI commentary agents: position explanations, per-game annotations, coach reports
+  `
+  CREATE TABLE annotations (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    ply INTEGER,
+    kind TEXT NOT NULL CHECK(kind IN ('explain','move','narrative')),
+    text TEXT NOT NULL,
+    model TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_annotations_game ON annotations(game_id, kind, ply);
+
+  CREATE TABLE coach_reports (
+    id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    games_considered INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_coach_reports_created ON coach_reports(created_at);
   `
 ]
 

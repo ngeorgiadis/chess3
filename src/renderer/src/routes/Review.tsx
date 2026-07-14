@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Chess } from 'chess.js'
 import { api } from '../api'
-import { useStore } from '../store'
+import { useStore, useAppEvent } from '../store'
 import { Board } from '../components/Board'
 import { PlayOut } from '../components/PlayOut'
 import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
 import { openingLabel } from '@shared/eco-names'
-import type { GameRecord, MistakeRecord, MoveRecord, PositionAnalysis, PvLine } from '@shared/types'
+import type { GameAnnotations, GameRecord, MistakeRecord, MoveRecord, PositionAnalysis, PvLine } from '@shared/types'
 
 /** White-perspective centipawns for the eval graph / bars. */
 function whiteCp(a: PositionAnalysis): number {
@@ -177,8 +177,12 @@ function AccuracySummary({ game, mistakes }: { game: GameRecord; mistakes: Mista
   )
 }
 
+const EMPTY_ANNOTATIONS: GameAnnotations = { narrative: null, moves: [] }
+
 export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   const navigate = useStore((s) => s.navigate)
+  const settings = useStore((s) => s.settings)
+  const jobs = useStore((s) => s.jobs)
   const [game, setGame] = useState<GameRecord | null>(null)
   const [moves, setMoves] = useState<MoveRecord[]>([])
   const [analyses, setAnalyses] = useState<PositionAnalysis[]>([])
@@ -194,13 +198,53 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   const [previewIdx, setPreviewIdx] = useState(0)
   /** Set to a fen to swap the board area for a playable game vs the engine from that position. */
   const [playFen, setPlayFen] = useState<string | null>(null)
+  /** AI coach: per-game narrative + per-move commentary (A2), and the on-demand explainer (A1). */
+  const [annotations, setAnnotations] = useState<GameAnnotations>(EMPTY_ANNOTATIONS)
+  const [explain, setExplain] = useState<{ ply: number; text: string } | null>(null)
+  const [explainLoading, setExplainLoading] = useState(false)
+  const [explainError, setExplainError] = useState<string | null>(null)
+
+  const aiConfigured = settings != null && settings.aiConfig.mode !== 'manual'
+  const annotateJob = jobs.find(
+    (j) =>
+      j.type === 'annotate-game' &&
+      (j.payload as { gameId?: string } | null)?.gameId === gameId &&
+      (j.status === 'pending' || j.status === 'running')
+  )
 
   useEffect(() => {
     void api.games.get(gameId).then(setGame)
     void api.games.moves(gameId).then(setMoves)
     void api.analysis.forGame(gameId).then(setAnalyses)
     void api.analysis.mistakes(gameId).then(setMistakes)
+    void api.ai.annotationsForGame(gameId).then(setAnnotations)
   }, [gameId])
+
+  useAppEvent(['annotations:changed'], () => {
+    void api.ai.annotationsForGame(gameId).then(setAnnotations)
+  })
+
+  async function annotateThisGame(): Promise<void> {
+    try {
+      await api.ai.annotateGame(gameId)
+      setNotice('Annotating this game — the coach’s summary will appear above when ready.')
+    } catch (e) {
+      setNotice((e as Error).message)
+    }
+  }
+
+  async function explainCurrentPosition(): Promise<void> {
+    setExplainLoading(true)
+    setExplainError(null)
+    try {
+      const res = await api.ai.explainPosition(gameId, currentPly)
+      setExplain({ ply: currentPly, text: res.text })
+    } catch (e) {
+      setExplainError((e as Error).message)
+    } finally {
+      setExplainLoading(false)
+    }
+  }
 
   // keyboard navigation
   useEffect(() => {
@@ -241,6 +285,8 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
     setTryFeedback(null)
     setPreviewRank(null)
     setPreviewIdx(0)
+    setExplain(null)
+    setExplainError(null)
   }, [currentPly])
 
   // autoplay
@@ -256,6 +302,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
 
   const mistakeByPly = useMemo(() => new Map(mistakes.map((m) => [m.ply, m])), [mistakes])
   const analysisByPly = useMemo(() => new Map(analyses.map((a) => [a.ply, a])), [analyses])
+  const annotationByPly = useMemo(() => new Map(annotations.moves.map((a) => [a.ply, a])), [annotations.moves])
 
   if (!game) return <div className="muted">Loading…</div>
 
@@ -391,6 +438,39 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
         </div>
       )}
       {analyses.length > 0 && <AccuracySummary game={game} mistakes={mistakes} />}
+      {analyses.length > 0 && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <h3 style={{ margin: 0 }}>🤖 Coach's summary</h3>
+            <button
+              className="small"
+              disabled={!aiConfigured || Boolean(annotateJob)}
+              title={!aiConfigured ? 'Configure an AI provider in Settings first' : undefined}
+              onClick={() => void annotateThisGame()}
+            >
+              {annotateJob ? 'Annotating…' : annotations.narrative ? 'Re-annotate this game' : 'Annotate this game'}
+            </button>
+          </div>
+          {annotations.narrative ? (
+            <div className="col" style={{ gap: 6, marginTop: 6 }}>
+              {annotations.narrative.text
+                .split('\n\n')
+                .filter((p) => p.trim())
+                .map((p, i) => (
+                  <p key={i} style={{ margin: 0 }}>
+                    {p}
+                  </p>
+                ))}
+            </div>
+          ) : (
+            <p className="muted" style={{ marginTop: 6, marginBottom: 0 }}>
+              {aiConfigured
+                ? "Generate an AI narrative of this game's opening, turning points, and key lessons."
+                : 'Configure an AI provider in Settings to generate a coach summary of this game.'}
+            </p>
+          )}
+        </div>
+      )}
       {notice && (
         <div className="callout" style={{ marginBottom: 12 }}>
           {notice}
@@ -568,6 +648,41 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                   Play it out from here
                 </button>
               </div>
+            </div>
+          )}
+
+          {positionAnalysis && (
+            <div className="card">
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <h3 style={{ margin: 0 }}>AI coach</h3>
+                <button
+                  className="small"
+                  disabled={!aiConfigured || explainLoading}
+                  title={!aiConfigured ? 'Configure an AI provider in Settings first' : undefined}
+                  onClick={() => void explainCurrentPosition()}
+                >
+                  {explainLoading ? 'Thinking…' : 'Explain this position'}
+                </button>
+              </div>
+              {explainError && (
+                <div className="callout error" style={{ marginTop: 8 }}>
+                  {explainError}
+                </div>
+              )}
+              {explain && explain.ply === currentPly ? (
+                <p style={{ marginTop: 8, marginBottom: 0 }}>{explain.text}</p>
+              ) : (
+                annotationByPly.get(currentPly) && (
+                  <p className="muted" style={{ marginTop: 8, marginBottom: 0 }}>
+                    {annotationByPly.get(currentPly)!.text}
+                  </p>
+                )
+              )}
+              {!aiConfigured && !annotationByPly.get(currentPly) && (
+                <p className="muted" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+                  Configure an AI provider in Settings to get explanations for individual positions.
+                </p>
+              )}
             </div>
           )}
 

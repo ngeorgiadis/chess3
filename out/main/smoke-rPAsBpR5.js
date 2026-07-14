@@ -137,6 +137,46 @@ async function runSmokeTest() {
   const plan = index.computeTodayPlan();
   check("today plan has 3-5 tasks", plan.tasks.length >= 1 && plan.tasks.length <= 5, `${plan.tasks.length} tasks`);
   check("plan counts due repertoire", plan.dueRepertoire >= 0);
+  const sampleDossier = {
+    gameId: "game-x",
+    ply: 12,
+    fen: "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 4",
+    sideToMove: "b",
+    moveNumber: 4,
+    phase: "opening",
+    openingName: "Italian Game",
+    players: { white: "alice", black: "bob", whiteRating: 1500, blackRating: 1480, userColor: "black" },
+    recentMovesText: "3.Bc4 Nc6 4.Nf3",
+    playedMove: { san: "Nc6", uci: "b8c6" },
+    mistake: null,
+    lines: [{ rank: 1, san: "Nf6", evalLabel: "+6.00", evalCp: 600, continuationText: "O-O Bc5" }],
+    targetRatingMin: 1300,
+    targetRatingMax: 1700
+  };
+  const verifiedText = index.verifyExplanation(
+    sampleDossier,
+    "Black should develop with Nf6, hitting e4 and preparing to castle. After O-O Bc5, Black is comfortable."
+  );
+  check("verifier accepts a grounded explanation", verifiedText.verified, JSON.stringify(verifiedText.issues));
+  const hallucinated = index.verifyExplanation(
+    sampleDossier,
+    "Black should play the crushing Qxh7#, winning immediately since the king is exposed."
+  );
+  check(
+    "verifier flags a hallucinated illegal move",
+    !hallucinated.verified && hallucinated.issues.includes("Qxh7#"),
+    JSON.stringify(hallucinated.issues)
+  );
+  const evalMismatch = index.verifyExplanation(sampleDossier, "White is completely winning here and should convert easily.");
+  check("verifier flags an eval-direction contradiction", !evalMismatch.verified, JSON.stringify(evalMismatch.issues));
+  const narrativeOk = index.verifyNarrative(
+    ["e4", "e5", "Nf3", "Nc6", "Bc4"],
+    [sampleDossier],
+    "The game opened 1.e4 e5 2.Nf3 Nc6 3.Bc4, a classical Italian setup."
+  );
+  check("narrative verifier accepts real game moves", narrativeOk.verified, JSON.stringify(narrativeOk.issues));
+  const narrativeBad = index.verifyNarrative(["e4", "e5"], [sampleDossier], "Black later delivered Qxh7# to finish the game.");
+  check("narrative verifier flags an unlisted move", !narrativeBad.verified, JSON.stringify(narrativeBad.issues));
   console.log(failures === 0 ? "SMOKE TEST PASSED" : `SMOKE TEST FAILED (${failures} failures)`);
   return failures === 0;
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
 import { openingLabel } from '@shared/eco-names'
-import type { AccuracyPoint, RatingPoint, ResultsSplit, StatsOverview } from '@shared/types'
+import type { AccuracyPoint, CoachReportRecord, RatingPoint, ResultsSplit, StatsOverview } from '@shared/types'
 
 const TIME_CLASS_LABEL: Record<string, string> = {
   bullet: 'Bullet',
@@ -11,6 +11,124 @@ const TIME_CLASS_LABEL: Record<string, string> = {
   classical: 'Classical',
   daily: 'Daily',
   unknown: 'Other'
+}
+
+const WEAKNESS_LABEL: Record<string, string> = {
+  tactics: 'Tactical awareness',
+  opening: 'Opening preparation',
+  endgame: 'Endgame technique',
+  calculation: 'Calculation depth',
+  strategy: 'Strategic judgment',
+  'time-management': 'Time management'
+}
+
+function impactBadgeClass(impact: 'low' | 'medium' | 'high'): string {
+  return impact === 'high' ? 'red' : impact === 'medium' ? 'yellow' : 'blue'
+}
+
+function CoachReportCard(): React.JSX.Element {
+  const settings = useStore((s) => s.settings)
+  const navigate = useStore((s) => s.navigate)
+  const aiConfigured = settings != null && settings.aiConfig.mode !== 'manual'
+  const [report, setReport] = useState<CoachReportRecord | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void api.ai.coachReport.latest().then(setReport)
+  }, [])
+
+  async function generate(): Promise<void> {
+    setLoading(true)
+    setError(null)
+    try {
+      setReport(await api.ai.coachReport.generate())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h3 style={{ margin: 0 }}>🤖 Coach report</h3>
+          <p className="muted" style={{ margin: '4px 0 0' }}>
+            A cross-game weakness diagnosis and 7-day plan, built from your recently analyzed games.
+          </p>
+        </div>
+        <button
+          className="small primary"
+          disabled={!aiConfigured || loading}
+          title={!aiConfigured ? 'Configure an AI provider in Settings first' : undefined}
+          onClick={() => void generate()}
+        >
+          {loading ? 'Generating…' : report ? 'Refresh' : 'Generate coach report'}
+        </button>
+      </div>
+      {error && (
+        <div className="callout error" style={{ marginTop: 10 }}>
+          {error}
+        </div>
+      )}
+      {!aiConfigured && !report && (
+        <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
+          Configure an AI provider in{' '}
+          <button className="small" onClick={() => navigate({ name: 'settings' })}>
+            Settings
+          </button>{' '}
+          to unlock coach reports.
+        </p>
+      )}
+      {report && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ marginTop: 0 }}>{report.summary}</p>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+            Based on {report.gamesConsidered} recently analyzed game(s) · generated {report.createdAt.slice(0, 10)}
+          </div>
+          <div className="col" style={{ gap: 12 }}>
+            {report.topWeaknesses.map((w) => (
+              <div key={w.tag}>
+                <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                  <span className={`badge ${impactBadgeClass(w.impact)}`}>{w.impact}</span>
+                  <b>{WEAKNESS_LABEL[w.tag] ?? w.tag}</b>
+                </div>
+                <p style={{ margin: '4px 0' }}>{w.recommendedAction}</p>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  {w.evidence.map((e, i) => (
+                    <div key={i}>· {e}</div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {report.sevenDayPlan.length > 0 && (
+            <>
+              <h4 style={{ marginTop: 16, marginBottom: 8 }}>7-day plan</h4>
+              <div className="col" style={{ gap: 6 }}>
+                {report.sevenDayPlan.map((d) => (
+                  <div key={d.day} className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+                    <span className="muted mono" style={{ width: 46, flexShrink: 0 }}>
+                      Day {d.day}
+                    </span>
+                    <div>
+                      {d.tasks.map((t, i) => (
+                        <div key={i}>
+                          {t.title} <span className="muted">({t.minutes} min)</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function LineChart({
@@ -209,6 +327,8 @@ export function Insights(): React.JSX.Element {
           )}
         </div>
       </div>
+
+      <CoachReportCard />
 
       <div className="card">
         <h3>Your openings</h3>

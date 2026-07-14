@@ -234,6 +234,30 @@ const MIGRATIONS = [
   ALTER TABLE games ADD COLUMN accuracy_black REAL;
   ALTER TABLE repertoire_nodes ADD COLUMN opening_name TEXT;
   ALTER TABLE repertoire_nodes ADD COLUMN line_name TEXT;
+  `,
+  // v3 — AI commentary agents: position explanations, per-game annotations, coach reports
+  `
+  CREATE TABLE annotations (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    ply INTEGER,
+    kind TEXT NOT NULL CHECK(kind IN ('explain','move','narrative')),
+    text TEXT NOT NULL,
+    model TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_annotations_game ON annotations(game_id, kind, ply);
+
+  CREATE TABLE coach_reports (
+    id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    games_considered INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_coach_reports_created ON coach_reports(created_at);
   `
 ];
 function isOurSchema(candidate) {
@@ -13814,7 +13838,24 @@ async function chat(args) {
   if (!content) throw new Error("AI provider returned an empty response.");
   return content;
 }
-const SYSTEM_PROMPT = `You are The Chess Master Coach, a patient but demanding chess instructor specialized in
+function parseJsonLoose(text) {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+const SYSTEM_PROMPT$3 = `You are The Chess Master Coach, a patient but demanding chess instructor specialized in
 helping 1400–1800 online-rated players improve by turning chess ideas into practical board skills.
 You transform user-provided authorized chess material, notes, games or instructions into structured
 lessons and exercises for the Chess Mentor Studio desktop app.
@@ -13875,24 +13916,7 @@ User goal: ${args.goal || "Create a focused lesson from this material."}
 Target rating: ${args.targetRatingMin}-${args.targetRatingMax}.
 
 ${OUTLINE_INSTRUCTIONS}`;
-  return chat({ system: SYSTEM_PROMPT, user, temperature: 0.5 });
-}
-function tryParseJson(text) {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const start = cleaned.indexOf("{");
-    const end = cleaned.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(cleaned.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
+  return chat({ system: SYSTEM_PROMPT$3, user, temperature: 0.5 });
 }
 async function generateLesson(args) {
   const baseUser = `Source material (rights mode: ${args.rightsMode}):
@@ -13907,8 +13931,8 @@ ${args.outline.slice(0, 8e3)}
 ---
 
 ${jsonInstructions(args)}`;
-  let rawText = await chat({ system: SYSTEM_PROMPT, user: baseUser, expectJson: true, temperature: 0.3 });
-  let lessonJson = tryParseJson(rawText);
+  let rawText = await chat({ system: SYSTEM_PROMPT$3, user: baseUser, expectJson: true, temperature: 0.3 });
+  let lessonJson = parseJsonLoose(rawText);
   if (!lessonJson) {
     return { lessonJson: null, rawText, report: null, error: "The AI response was not valid JSON." };
   }
@@ -13921,14 +13945,533 @@ Your previous JSON had validation problems:
 ${issues}
 
 Fix ALL problems and output the corrected full JSON object only.`;
-    rawText = await chat({ system: SYSTEM_PROMPT, user: repairUser, expectJson: true, temperature: 0.2 });
-    const repaired = tryParseJson(rawText);
+    rawText = await chat({ system: SYSTEM_PROMPT$3, user: repairUser, expectJson: true, temperature: 0.2 });
+    const repaired = parseJsonLoose(rawText);
     if (repaired) {
       lessonJson = repaired;
       report = validateLesson(lessonJson);
     }
   }
   return { lessonJson, rawText, report };
+}
+function loadMoveRows(gameId) {
+  return getDb().prepare("SELECT ply, move_number, color, san, uci FROM moves WHERE game_id = ? ORDER BY ply").all(gameId);
+}
+function formatMoveRun(moves) {
+  if (moves.length === 0) return "(start of game)";
+  const parts = [];
+  for (const m of moves) {
+    if (m.color === "white") parts.push(`${m.move_number}.${m.san}`);
+    else if (parts.length === 0) parts.push(`${m.move_number}…${m.san}`);
+    else parts.push(m.san);
+  }
+  return parts.join(" ");
+}
+function evalLabel(score) {
+  if (score.type === "mate") return `#${score.value}`;
+  return (score.value >= 0 ? "+" : "") + (score.value / 100).toFixed(2);
+}
+function buildPositionDossier(gameId, ply, targetRatingMin = 1300, targetRatingMax = 1700) {
+  const db2 = getDb();
+  const game = db2.prepare(
+    "SELECT white_name, black_name, white_rating, black_rating, user_color, eco_code, opening_name FROM games WHERE id = ?"
+  ).get(gameId);
+  if (!game) return null;
+  const moves = loadMoveRows(gameId);
+  const analyses = getAnalysisForGame(gameId);
+  const analysis = analyses.find((a) => a.ply === ply);
+  if (!analysis) return null;
+  const mistakes = getMistakesForGame(gameId);
+  const mistake = mistakes.find((m) => m.ply === ply) ?? null;
+  const playedMoveRow = ply > 0 ? moves[ply - 1] : void 0;
+  const playedMove = playedMoveRow ? { san: playedMoveRow.san, uci: playedMoveRow.uci } : null;
+  const recentMoves = moves.slice(Math.max(0, ply - 6), ply);
+  const recentMovesText = formatMoveRun(recentMoves);
+  const lines = analysis.multiPv.slice(0, 3).map((pv) => ({
+    rank: pv.rank,
+    san: pv.moveSan ?? pv.moveUci,
+    evalLabel: evalLabel(pv.score),
+    evalCp: scoreToCp(pv.score),
+    continuationText: (pv.pvSan && pv.pvSan.length ? pv.pvSan : pv.pvUci).slice(1, 6).join(" ")
+  }));
+  return {
+    gameId,
+    ply,
+    fen: analysis.fen,
+    sideToMove: analysis.sideToMove,
+    moveNumber: playedMoveRow ? playedMoveRow.move_number : Math.floor(ply / 2) + 1,
+    phase: gamePhase(ply, moves.length),
+    openingName: game.eco_code ? openingLabel({ openingName: game.opening_name, ecoCode: game.eco_code }) : null,
+    players: {
+      white: game.white_name,
+      black: game.black_name,
+      whiteRating: game.white_rating,
+      blackRating: game.black_rating,
+      userColor: game.user_color
+    },
+    recentMovesText,
+    playedMove,
+    mistake: mistake ? { severity: mistake.severity, evalLossCp: mistake.evalLossCp, themeTags: mistake.themeTags } : null,
+    lines,
+    targetRatingMin,
+    targetRatingMax
+  };
+}
+function formatDossierForPrompt(d) {
+  const sideName = d.sideToMove === "w" ? "White" : "Black";
+  const lines = [
+    `Position: move ${d.moveNumber}, ${sideName} to move. Phase: ${d.phase}.${d.openingName ? ` Opening: ${d.openingName}.` : ""}`,
+    `FEN: ${d.fen}`,
+    `Recent moves: ${d.recentMovesText}`,
+    d.playedMove ? `The move actually played to reach this position: ${d.playedMove.san}` : "",
+    d.mistake ? `This move was flagged as a ${d.mistake.severity}${d.mistake.evalLossCp != null ? ` (lost ~${(d.mistake.evalLossCp / 100).toFixed(1)} pawns of evaluation)` : ""}. Themes: ${d.mistake.themeTags.join(", ") || "none"}.` : "",
+    "Engine lines (side-to-move perspective, already verified legal — use ONLY these moves and continuations when naming specific moves):",
+    ...d.lines.map(
+      (l) => `  ${l.rank}. ${l.san} (${l.evalLabel})${l.continuationText ? ` — continues ${l.continuationText}` : ""}`
+    ),
+    `Players: White ${d.players.white ?? "?"}${d.players.whiteRating ? ` (${d.players.whiteRating})` : ""}, Black ${d.players.black ?? "?"}${d.players.blackRating ? ` (${d.players.blackRating})` : ""}. The user played ${d.players.userColor}.`,
+    `Target audience: a chess player rated ${d.targetRatingMin}-${d.targetRatingMax}. Keep it concrete and practical, not academic.`
+  ];
+  return lines.filter(Boolean).join("\n");
+}
+function buildGameDossierBundle(gameId, plies, targetRatingMin = 1300, targetRatingMax = 1700) {
+  const allSanMoves = loadMoveRows(gameId).map((r) => r.san);
+  const dossiers = plies.map((ply) => buildPositionDossier(gameId, ply, targetRatingMin, targetRatingMax)).filter((d) => d !== null);
+  return { allSanMoves, dossiers };
+}
+const SAN_TOKEN = /\b(?:O-O-O|O-O|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)/g;
+const AMBIGUOUS_SQUARE_ONLY = /^[a-h][1-8]$/;
+function extractSanTokens(text) {
+  const tokens = text.match(SAN_TOKEN) ?? [];
+  return [...new Set(tokens.filter((t) => !AMBIGUOUS_SQUARE_ONLY.test(t)))];
+}
+function dossierAllowlist(d) {
+  const set = /* @__PURE__ */ new Set();
+  if (d.playedMove) set.add(d.playedMove.san);
+  for (const token of extractSanTokens(d.recentMovesText)) set.add(token);
+  for (const line of d.lines) {
+    set.add(line.san);
+    for (const token of extractSanTokens(line.continuationText)) set.add(token);
+  }
+  return set;
+}
+function isLegalFrom(fen, san) {
+  try {
+    return new Chess(fen).moves().includes(san);
+  } catch {
+    return false;
+  }
+}
+const WHITE_WINNING = /\bwhite\s+(?:is|was)\s+(?:clearly\s+|completely\s+|much\s+)?winning\b/i;
+const BLACK_WINNING = /\bblack\s+(?:is|was)\s+(?:clearly\s+|completely\s+|much\s+)?winning\b/i;
+const EVAL_MISMATCH_THRESHOLD_CP = 250;
+function checkEvalDirection(d, text) {
+  const best = d.lines[0];
+  if (!best) return null;
+  const whiteCp = d.sideToMove === "w" ? best.evalCp : -best.evalCp;
+  if (WHITE_WINNING.test(text) && whiteCp < -EVAL_MISMATCH_THRESHOLD_CP) {
+    return `Text claims White is winning, but the engine's best line favors Black (${best.evalLabel} for the side to move).`;
+  }
+  if (BLACK_WINNING.test(text) && whiteCp > EVAL_MISMATCH_THRESHOLD_CP) {
+    return `Text claims Black is winning, but the engine's best line favors White (${best.evalLabel} for the side to move).`;
+  }
+  return null;
+}
+function verifyExplanation(dossier, text) {
+  const allowlist = dossierAllowlist(dossier);
+  const issues = [];
+  for (const token of extractSanTokens(text)) {
+    if (allowlist.has(token)) continue;
+    if (isLegalFrom(dossier.fen, token)) continue;
+    issues.push(token);
+  }
+  const evalIssue = checkEvalDirection(dossier, text);
+  if (evalIssue) issues.push(evalIssue);
+  return { verified: issues.length === 0, issues };
+}
+function verifyNarrative(allSanMoves, dossiers, text) {
+  const allowlist = new Set(allSanMoves);
+  for (const d of dossiers) for (const token of dossierAllowlist(d)) allowlist.add(token);
+  const issues = [];
+  for (const token of extractSanTokens(text)) {
+    if (allowlist.has(token)) continue;
+    issues.push(token);
+  }
+  return { verified: issues.length === 0, issues };
+}
+const SYSTEM_PROMPT$2 = `You are The Chess Master Coach, a patient but demanding chess instructor. You explain a
+single chess position to a student using ONLY the facts given to you: the FEN, recent moves, and the engine's
+lines. Never invent a move, evaluation, or line that isn't shown to you — if you want to discuss what a side
+should do, use one of the given engine lines.
+
+Write 2-4 short sentences: what the position calls for, why the top engine line works, and — if a mistake was
+just played — concretely what it allowed and what to check next time. Practical, concrete, board-oriented.
+No engine jargon like "depth" or "nodes". Output plain text only, no markdown, no move-number-only lists.`;
+function findCached(gameId, ply, model) {
+  const row = getDb().prepare(
+    `SELECT * FROM annotations WHERE game_id = ? AND ply = ? AND kind = 'explain' AND model = ? ORDER BY created_at DESC LIMIT 1`
+  ).get(gameId, ply, model);
+  return row ? rowToAnnotation(row) : null;
+}
+function rowToAnnotation(row) {
+  return {
+    id: row.id,
+    gameId: row.game_id,
+    ply: row.ply ?? null,
+    kind: row.kind,
+    text: row.text,
+    model: row.model,
+    verified: Boolean(row.verified),
+    createdAt: row.created_at
+  };
+}
+async function explainPosition(gameId, ply) {
+  const settings = getSettings();
+  const model = settings.aiConfig.model || settings.aiConfig.mode;
+  const cached = findCached(gameId, ply, model);
+  if (cached) return { text: cached.text, verified: cached.verified, cached: true, model };
+  const dossier = buildPositionDossier(gameId, ply, settings.ratingCurrent - 150, settings.ratingCurrent + 150);
+  if (!dossier) throw new Error("No engine analysis available for this position yet. Analyze the game first.");
+  if (dossier.lines.length === 0) throw new Error("No engine lines available for this position.");
+  const prompt = formatDossierForPrompt(dossier);
+  let text = await chat({ system: SYSTEM_PROMPT$2, user: prompt, temperature: 0.4 });
+  let result = verifyExplanation(dossier, text);
+  if (!result.verified) {
+    const repairUser = `${prompt}
+
+Your previous explanation mentioned moves that are not among the facts above and could not be verified: ${result.issues.join("; ")}.
+Rewrite the explanation using ONLY the recent moves and engine lines listed above. Output only the corrected explanation.`;
+    text = await chat({ system: SYSTEM_PROMPT$2, user: repairUser, temperature: 0.2 });
+    result = verifyExplanation(dossier, text);
+  }
+  if (!result.verified) {
+    throw new Error(
+      "Could not produce a verified explanation for this position (the model kept naming unverifiable moves). Try again, or rely on the engine lines above."
+    );
+  }
+  const id2 = uid("ann");
+  getDb().prepare(
+    `INSERT INTO annotations (id, game_id, ply, kind, text, model, verified, created_at) VALUES (?,?,?,?,?,?,?,?)`
+  ).run(id2, gameId, ply, "explain", text, model, 1, now());
+  return { text, verified: true, cached: false, model };
+}
+const MAX_KEY_PLIES = 14;
+const SYSTEM_PROMPT$1 = `You are The Chess Master Coach, a patient but demanding chess instructor reviewing a
+student's game. You are given a set of key positions from the game, each annotated with engine facts (recent
+moves, the move actually played, and the engine's top lines). Use ONLY these facts — never invent a move,
+evaluation, or line that isn't shown to you.
+
+Write practical, concrete, board-oriented commentary. No engine jargon like "depth" or "nodes". No markdown.`;
+function selectKeyPlies(gameId) {
+  const db2 = getDb();
+  const moveCount = db2.prepare("SELECT COUNT(*) AS c FROM moves WHERE game_id = ?").get(gameId).c;
+  const mistakes = [...getMistakesForGame(gameId)].sort((a, b) => (b.evalLossCp ?? 0) - (a.evalLossCp ?? 0));
+  const set = /* @__PURE__ */ new Set();
+  for (const m of mistakes) {
+    if (set.size >= MAX_KEY_PLIES) break;
+    set.add(m.ply);
+  }
+  if (set.size < MAX_KEY_PLIES) {
+    let lastPhase = null;
+    for (let ply = 0; ply <= moveCount && set.size < MAX_KEY_PLIES; ply++) {
+      const phase = gamePhase(ply, moveCount);
+      if (phase !== lastPhase) {
+        if (lastPhase !== null) set.add(ply);
+        lastPhase = phase;
+      }
+    }
+  }
+  return [...set].sort((a, b) => a - b);
+}
+async function annotateGame(gameId, ctx) {
+  const db2 = getDb();
+  const game = db2.prepare(
+    "SELECT white_name, black_name, result, eco_code, opening_name, user_color, analysis_status FROM games WHERE id = ?"
+  ).get(gameId);
+  if (!game) throw new Error("Game not found.");
+  if (game.analysis_status !== "done") throw new Error("Analyze this game before generating AI commentary.");
+  const settings = getSettings();
+  const model = settings.aiConfig.model || settings.aiConfig.mode;
+  const targetMin = settings.ratingCurrent - 150;
+  const targetMax = settings.ratingCurrent + 150;
+  ctx.setProgress(0, 3, "Selecting key positions");
+  const plies = selectKeyPlies(gameId);
+  const bundle = buildGameDossierBundle(gameId, plies, targetMin, targetMax);
+  if (bundle.dossiers.length === 0) throw new Error("No analyzed positions available to annotate.");
+  const header = `Game: ${game.white_name ?? "?"} vs ${game.black_name ?? "?"}, result ${game.result ?? "?"}${game.eco_code ? `, opening ${openingLabel({ openingName: game.opening_name, ecoCode: game.eco_code })}` : ""}. The user played ${game.user_color}.`;
+  const positionsText = bundle.dossiers.map((d, i) => `--- Position ${i + 1} (ply ${d.ply}) ---
+${formatDossierForPrompt(d)}`).join("\n\n");
+  const user = `${header}
+
+Below are ${bundle.dossiers.length} key positions from this game, each with engine facts. Using ONLY the moves and
+evaluations shown for each position, write:
+1. "narrative": whole-game commentary (3-5 short paragraphs separated by blank lines) covering the opening, the
+   turning point(s), a brief note per phase, ending with "Three things to remember:" followed by three concrete,
+   concise lessons.
+2. "moves": for EACH position listed above, a 1-2 sentence comment on what mattered there, keyed by its exact ply
+   number.
+
+${positionsText}
+
+Output a single JSON object: { "narrative": string, "moves": [{ "ply": number, "text": string }, ...] } with one
+moves entry per position above. Output ONLY the JSON object.`;
+  ctx.setProgress(1, 3, "Generating commentary");
+  let rawText = await chat({ system: SYSTEM_PROMPT$1, user, expectJson: true, temperature: 0.4 });
+  let parsed = parseJsonLoose(rawText);
+  const dossierByPly = new Map(bundle.dossiers.map((d) => [d.ply, d]));
+  const verifyAll = (p) => {
+    const narrativeIssues2 = p?.narrative ? verifyNarrative(bundle.allSanMoves, bundle.dossiers, p.narrative).issues : [];
+    const moveIssues2 = /* @__PURE__ */ new Map();
+    for (const m of p?.moves ?? []) {
+      const d = dossierByPly.get(m.ply);
+      if (!d) continue;
+      const r = verifyExplanation(d, m.text);
+      if (!r.verified) moveIssues2.set(m.ply, r.issues);
+    }
+    return { narrativeIssues: narrativeIssues2, moveIssues: moveIssues2 };
+  };
+  let { narrativeIssues, moveIssues } = verifyAll(parsed);
+  if (parsed && (narrativeIssues.length > 0 || moveIssues.size > 0)) {
+    const issueLines = [];
+    if (narrativeIssues.length) issueLines.push(`- narrative mentioned unverifiable moves: ${narrativeIssues.join("; ")}`);
+    for (const [ply, issues] of moveIssues) {
+      issueLines.push(`- move comment for ply ${ply} mentioned unverifiable moves: ${issues.join("; ")}`);
+    }
+    const repairUser = `${user}
+
+Your previous JSON mentioned moves that are not among the given facts:
+${issueLines.join("\n")}
+
+Rewrite, using ONLY moves shown in each position's facts above. Output the corrected JSON object only.`;
+    ctx.setProgress(2, 3, "Repairing commentary");
+    rawText = await chat({ system: SYSTEM_PROMPT$1, user: repairUser, expectJson: true, temperature: 0.2 });
+    const repaired = parseJsonLoose(rawText);
+    if (repaired) {
+      parsed = repaired;
+      ({ narrativeIssues, moveIssues } = verifyAll(parsed));
+    }
+  }
+  db2.prepare(`DELETE FROM annotations WHERE game_id = ? AND kind IN ('move','narrative')`).run(gameId);
+  const insert = db2.prepare(
+    `INSERT INTO annotations (id, game_id, ply, kind, text, model, verified, created_at) VALUES (?,?,?,?,?,?,?,?)`
+  );
+  let narrativeGenerated = false;
+  if (parsed?.narrative && narrativeIssues.length === 0) {
+    insert.run(uid("ann"), gameId, null, "narrative", parsed.narrative, model, 1, now());
+    narrativeGenerated = true;
+  }
+  const mistakesByPly = new Map(getMistakesForGame(gameId).map((m) => [m.ply, m]));
+  let moveCount = 0;
+  for (const m of parsed?.moves ?? []) {
+    if (!dossierByPly.has(m.ply)) continue;
+    if (!moveIssues.has(m.ply)) {
+      insert.run(uid("ann"), gameId, m.ply, "move", m.text, model, 1, now());
+      moveCount++;
+      continue;
+    }
+    const mistake = mistakesByPly.get(m.ply);
+    if (mistake) {
+      const fallbackText = [mistake.humanSummary, mistake.whyBad].filter(Boolean).join(" ");
+      insert.run(uid("ann"), gameId, m.ply, "move", fallbackText, "template", 1, now());
+      moveCount++;
+    }
+  }
+  ctx.setProgress(3, 3, "Done");
+  broadcast({ type: "annotations:changed", payload: { gameId } });
+  return { moveCount, narrativeGenerated };
+}
+function getAnnotationsForGame(gameId) {
+  const db2 = getDb();
+  const narrativeRow = db2.prepare(`SELECT * FROM annotations WHERE game_id = ? AND kind = 'narrative' ORDER BY created_at DESC LIMIT 1`).get(gameId);
+  const moveRows = db2.prepare(`SELECT * FROM annotations WHERE game_id = ? AND kind = 'move' ORDER BY ply ASC`).all(gameId);
+  return {
+    narrative: narrativeRow ? rowToAnnotation(narrativeRow) : null,
+    moves: moveRows.map(rowToAnnotation)
+  };
+}
+const GAMES_CONSIDERED = 20;
+const ALLOWED_TAGS = ["tactics", "opening", "endgame", "calculation", "strategy", "time-management"];
+function recentAnalyzedGameIds() {
+  const rows = getDb().prepare(`SELECT id FROM games WHERE analysis_status = 'done' ORDER BY ended_at DESC LIMIT ?`).all(GAMES_CONSIDERED);
+  return rows.map((r) => r.id);
+}
+function linkedExerciseIds(tag) {
+  const rows = getDb().prepare(
+    `SELECT id FROM exercises WHERE tags_json LIKE ? ORDER BY (due_at IS NULL), due_at ASC LIMIT 3`
+  ).all(`%"${tag}"%`);
+  return rows.map((r) => r.id);
+}
+function computeCandidateWeaknesses(gameIds) {
+  if (gameIds.length === 0) return [];
+  const placeholders = gameIds.map(() => "?").join(",");
+  const rows = getDb().prepare(
+    `SELECT m.ply, m.eval_loss_cp, m.human_summary, m.training_action, g.white_name, g.black_name, g.user_color, g.ended_at
+       FROM mistakes m JOIN games g ON g.id = m.game_id
+       WHERE m.game_id IN (${placeholders}) AND m.confidence != 'low'
+       ORDER BY m.eval_loss_cp DESC`
+  ).all(...gameIds);
+  const groups = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    let g = groups.get(r.training_action);
+    if (!g) {
+      g = { count: 0, totalLossCp: 0, evidence: [] };
+      groups.set(r.training_action, g);
+    }
+    g.count++;
+    g.totalLossCp += r.eval_loss_cp ?? 0;
+    if (g.evidence.length < 3) {
+      const opponent = (r.user_color === "white" ? r.black_name : r.white_name) ?? "opponent";
+      const date = r.ended_at ? r.ended_at.slice(0, 10) : "unknown date";
+      g.evidence.push(`vs ${opponent} (${date}), move ${Math.ceil(r.ply / 2)}: ${r.human_summary}`);
+    }
+  }
+  const sorted = [...groups.entries()].sort((a, b) => b[1].totalLossCp - a[1].totalLossCp);
+  return sorted.map(([tag, g], i) => ({
+    tag,
+    count: g.count,
+    totalLossCp: g.totalLossCp,
+    impact: i === 0 ? "high" : i <= 2 ? "medium" : "low",
+    evidence: g.evidence,
+    linkedExerciseIds: linkedExerciseIds(tag)
+  }));
+}
+const SYSTEM_PROMPT = `You are The Chess Master Coach. You are given a set of ALREADY-COMPUTED, factual weakness
+candidates from a student's real recent games (tag, how often it recurs, and real evidence quotes) — you have no
+access to the raw games yourself. Never invent evidence, opponents, or game details; only what is listed exists.
+Your job is to prioritize, explain motivatingly, and build a practical 7-day plan from these given facts.`;
+function verifyReportShape(parsed, candidatesByTag) {
+  const issues = [];
+  if (!parsed || typeof parsed !== "object") return { verified: false, issues: ["Response was not a JSON object."] };
+  const p = parsed;
+  if (typeof p.summary !== "string" || !p.summary.trim()) issues.push('missing "summary"');
+  if (!Array.isArray(p.topWeaknesses) || p.topWeaknesses.length === 0) {
+    issues.push('missing "topWeaknesses"');
+  } else {
+    for (const w of p.topWeaknesses) {
+      if (!w || typeof w.tag !== "string" || !candidatesByTag.has(w.tag)) {
+        issues.push(`weakness tag "${w?.tag}" is not one of the given candidate tags`);
+      }
+      if (!w || typeof w.recommendedAction !== "string" || !w.recommendedAction.trim()) {
+        issues.push(`weakness "${w?.tag}" is missing "recommendedAction"`);
+      }
+    }
+  }
+  const allowedTaskTypes = /* @__PURE__ */ new Set([...ALLOWED_TAGS, "game-review", "opening-review", "lesson", "rest"]);
+  if (!Array.isArray(p.sevenDayPlan) || p.sevenDayPlan.length === 0) {
+    issues.push('missing "sevenDayPlan"');
+  } else {
+    for (const day of p.sevenDayPlan) {
+      if (typeof day.day !== "number") issues.push('a plan day is missing a numeric "day"');
+      if (!Array.isArray(day.tasks)) {
+        issues.push(`day ${day.day} is missing "tasks"`);
+        continue;
+      }
+      for (const t of day.tasks) {
+        if (!t || typeof t.type !== "string" || !allowedTaskTypes.has(t.type)) {
+          issues.push(`task type "${t?.type}" on day ${day.day} is not an allowed type`);
+        }
+        if (!t || typeof t.minutes !== "number") issues.push(`a task on day ${day.day} is missing "minutes"`);
+      }
+    }
+  }
+  return { verified: issues.length === 0, issues };
+}
+async function generateCoachReport() {
+  const gameIds = recentAnalyzedGameIds();
+  const candidates = computeCandidateWeaknesses(gameIds);
+  if (candidates.length === 0) {
+    throw new Error("No mistakes found in your analyzed games yet — analyze a few games first.");
+  }
+  const top = candidates.slice(0, 8);
+  const candidatesByTag = new Map(top.map((c) => [c.tag, c]));
+  const settings = getSettings();
+  const model = settings.aiConfig.model || settings.aiConfig.mode;
+  const candidatesText = top.map(
+    (c, i) => `${i + 1}. tag: "${c.tag}" — recurs ${c.count} time(s), impact: ${c.impact}
+   evidence:
+${c.evidence.map((e) => `   - ${e}`).join("\n")}`
+  ).join("\n\n");
+  const user = `Games considered: ${gameIds.length} most recently analyzed games.
+
+Candidate weaknesses (already computed from real mistakes — do not add, remove, or rename tags):
+${candidatesText}
+
+Task:
+- Pick the 3-5 most important weaknesses (prefer high impact and recurring ones). Use the EXACT tag spelling given.
+- For each chosen weakness, write "recommendedAction": one or two concrete, motivating sentences on what to do about it.
+- Write "summary": 2-3 sentences, an honest but encouraging overall assessment.
+- Write "sevenDayPlan": 7 entries (day 1-7), each with 1-3 tasks. Each task has "type" (one of the chosen weakness
+  tags, or "game-review", "opening-review", "lesson", "rest"), "title" (short, specific, actionable), and "minutes"
+  (realistic, 10-30).
+
+Output a single JSON object: { "summary": string, "topWeaknesses": [{ "tag": string, "recommendedAction": string }],
+"sevenDayPlan": [{ "day": number, "tasks": [{ "type": string, "title": string, "minutes": number }] }] }.
+Output ONLY the JSON object.`;
+  let rawText = await chat({ system: SYSTEM_PROMPT, user, expectJson: true, temperature: 0.4 });
+  let parsed = parseJsonLoose(rawText);
+  let check = verifyReportShape(parsed, candidatesByTag);
+  if (!check.verified) {
+    const repairUser = `${user}
+
+Your previous JSON had problems:
+${check.issues.map((i) => `- ${i}`).join("\n")}
+
+Fix ALL problems, using ONLY the candidate tags listed above. Output the corrected JSON object only.`;
+    rawText = await chat({ system: SYSTEM_PROMPT, user: repairUser, expectJson: true, temperature: 0.2 });
+    parsed = parseJsonLoose(rawText);
+    check = verifyReportShape(parsed, candidatesByTag);
+  }
+  if (!check.verified || !parsed) {
+    throw new Error(`Could not produce a valid coach report (${check.issues.slice(0, 3).join("; ")}).`);
+  }
+  const topWeaknesses = parsed.topWeaknesses.map((w) => {
+    const cand = candidatesByTag.get(w.tag);
+    return {
+      tag: w.tag,
+      evidence: cand.evidence,
+      impact: cand.impact,
+      recommendedAction: w.recommendedAction,
+      linkedExerciseIds: cand.linkedExerciseIds
+    };
+  });
+  const sevenDayPlan = parsed.sevenDayPlan.map((d) => ({
+    day: d.day,
+    tasks: d.tasks.map((t) => ({ type: t.type, title: t.title, minutes: t.minutes }))
+  }));
+  const record = {
+    id: uid("coach"),
+    summary: parsed.summary,
+    topWeaknesses,
+    sevenDayPlan,
+    gamesConsidered: gameIds.length,
+    model,
+    createdAt: now()
+  };
+  getDb().prepare(
+    `INSERT INTO coach_reports (id, summary, report_json, games_considered, model, created_at) VALUES (?,?,?,?,?,?)`
+  ).run(
+    record.id,
+    record.summary,
+    JSON.stringify({ topWeaknesses: record.topWeaknesses, sevenDayPlan: record.sevenDayPlan }),
+    record.gamesConsidered,
+    record.model,
+    record.createdAt
+  );
+  return record;
+}
+function getLatestCoachReport() {
+  const row = getDb().prepare(`SELECT * FROM coach_reports ORDER BY created_at DESC LIMIT 1`).get();
+  if (!row) return null;
+  const parsed = JSON.parse(row.report_json);
+  return {
+    id: row.id,
+    summary: row.summary,
+    topWeaknesses: parsed.topWeaknesses,
+    sevenDayPlan: parsed.sevenDayPlan,
+    gamesConsidered: row.games_considered,
+    model: row.model,
+    createdAt: row.created_at
+  };
 }
 function handle(channel, fn) {
   electron.ipcMain.handle(channel, async (_event, args) => {
@@ -13964,6 +14507,16 @@ function queueAnalysis(gameIds, profileId) {
     jobIds.push(job.id);
   }
   return jobIds;
+}
+function queueAnnotation(gameId) {
+  const db2 = getDb();
+  const game = db2.prepare("SELECT analysis_status FROM games WHERE id = ?").get(gameId);
+  if (!game) throw new Error("Game not found.");
+  if (game.analysis_status !== "done") throw new Error("Analyze this game before generating AI commentary.");
+  const existing = listJobs(200).find(
+    (j) => j.type === "annotate-game" && j.payload?.gameId === gameId && (j.status === "pending" || j.status === "running")
+  );
+  return existing ?? enqueueJob("annotate-game", { gameId });
 }
 function registerIpc() {
   handle("settings:get", () => getSettings());
@@ -14083,6 +14636,11 @@ function registerIpc() {
   });
   handle("ai:outline", (args) => generateOutline(args));
   handle("ai:generateLesson", (args) => generateLesson(args));
+  handle("ai:explainPosition", (args) => explainPosition(args.gameId, args.ply));
+  handle("ai:annotateGame", (gameId) => queueAnnotation(gameId));
+  handle("ai:annotationsForGame", (gameId) => getAnnotationsForGame(gameId));
+  handle("ai:coachReport:generate", () => generateCoachReport());
+  handle("ai:coachReport:latest", () => getLatestCoachReport());
 }
 const API = "https://api.chess.com/pub";
 async function fetchJson(url) {
@@ -14321,6 +14879,7 @@ function resourcesDir() {
 }
 function registerJobHandlers() {
   registerJobHandler("analyze-game", analyzeGameJob);
+  registerJobHandler("annotate-game", (payload, ctx) => annotateGame(payload.gameId, ctx));
   registerJobHandler("import", async (payload, ctx) => {
     const p = payload;
     let result;
@@ -14409,7 +14968,7 @@ electron.app.whenReady().then(async () => {
   recoverJobs();
   void tick();
   if (isSmokeTest) {
-    void Promise.resolve().then(() => require("./smoke-D2ilFDZ_.js")).then(async ({ runSmokeTest }) => {
+    void Promise.resolve().then(() => require("./smoke-rPAsBpR5.js")).then(async ({ runSmokeTest }) => {
       const ok = await runSmokeTest().catch((e) => {
         console.error("Smoke test crashed:", e);
         return false;
@@ -14450,3 +15009,5 @@ exports.listNodes = listNodes;
 exports.parsePgnGame = parsePgnGame;
 exports.splitPgn = splitPgn;
 exports.validateLesson = validateLesson;
+exports.verifyExplanation = verifyExplanation;
+exports.verifyNarrative = verifyNarrative;

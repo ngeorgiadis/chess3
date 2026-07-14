@@ -38,6 +38,48 @@ Electron desktop app implementing `chess_training_app_specs/` (v1 scope). Status
 - Global `?` keyboard-shortcuts overlay; Review's `[`/`]` (prev/next critical moment) and Space (autoplay) are now real keybindings, not button-only.
 - **Not attempted this pass** (documented as follow-up, not half-implemented): one-click Stockfish download/install, and the SVG icon set replacing mixed emoji/unicode nav icons.
 
+### AI commentary agents (2026-07-14, branch `ux-pass-2`, see `AI_COMMENTARY_AGENTS_PROPOSAL.md`)
+
+Implements phases 1–3 of the proposal: the LLM narrates engine facts, it never computes chess itself, and
+every output is verified before display. `src/main/ai/`:
+
+- `grounding.ts` — builds a `PositionDossier` (FEN, recent moves, engine MultiPV lines in SAN, mistake info,
+  players) from stored `engine_analysis`/`mistakes` — the only source of chess facts agents may draw from.
+- `verify.ts` (A4) — deterministic validator: every SAN-shaped token in a model's output must either come
+  from the dossier or be independently legal from its FEN; bare square mentions ("e4") are exempted as
+  ambiguous prose, not move claims. Also flags "White/Black is winning" claims that contradict the engine's
+  own eval sign. One repair round on failure; the whole feature refuses to display unverified chess claims.
+- `explain-agent.ts` (A1) — "Explain this position" button in Review's coaching panel; cached per
+  (game, ply, model) in the new `annotations` table (kind `explain`).
+- `annotate-agent.ts` (A2) — `annotate-game` job: selects ~14 key positions (worst mistakes + phase
+  transitions), one batched LLM call for a whole-game narrative + per-move comments, verified per-item; a
+  move comment that fails verification falls back to the existing deterministic mistake text rather than
+  being dropped silently only when a template exists, else it's omitted. Narrative + move rows: `annotations`
+  table (kind `narrative`/`move`). Review shows a "Coach's summary" card (narrative) and move-level notes.
+- `coach-agent.ts` (A3) — cross-game diagnosis: weakness tags/evidence/impact/linked-exercise-IDs are computed
+  **deterministically** from real mistakes across the last 20 analyzed games; the LLM only picks which
+  weaknesses matter, writes prose (`summary`, `recommendedAction`), and builds a 7-day plan — it can never
+  invent evidence or game references since those aren't its to write. Stored in `coach_reports`; surfaced as
+  a "Coach report" card in Insights.
+- IPC: `ai:explainPosition`, `ai:annotateGame` (queues the job, dedups against an in-flight one), `ai:annotationsForGame`,
+  `ai:coachReport:generate`/`:latest`. New `annotations:changed` app event.
+- DB migration v3: `annotations`, `coach_reports` tables.
+- `provider.ts` gained `parseJsonLoose()` (shared tolerant JSON parser, also now used by `lesson-agent.ts`).
+- A5 (interactive chat with engine tools) intentionally **not attempted** — parked per the proposal until
+  1–3 prove out, since it needs tool-calling support the provider doesn't have yet.
+
+**Live-verified** (this machine has a local AI provider configured — `local-http` / `gemma4` — unlike the
+lesson agent, which was previously untested live): drove the built app via CDP
+(`--remote-debugging-port`), clicked "Explain this position" and called `ai:coachReport:generate` and
+`ai:annotateGame` directly against real data (thousands of games, 4 analyzed). All three reached the network
+call cleanly — dossier building, key-position selection, and the deterministic weakness aggregation all ran
+correctly against real data with zero console errors — and failed there with a clean, surfaced `AI provider
+error 404` because this machine's configured `baseUrl` (`http://localhost:11434`) is missing Ollama's `/v1`
+suffix (pre-existing local environment issue, same as `ai:outline`/`ai:generateLesson` would hit — not fixed,
+since it's a user setting change outside this task's scope). The `annotate-game` job also verified the
+job-queue failure path: proper `retryable: true` error stored, no stuck state. 6 new deterministic smoke
+checks added for `verify.ts` (`npm test`), all passing; typecheck clean.
+
 ## Commands
 
 ```
@@ -46,7 +88,11 @@ npm run dev / npm run build && npx electron . / npm test / npm run typecheck
 
 ## Not done / next candidates
 
-- **Untested live**: AI generation (no API key). Engine analysis + live eval now verified live (Stockfish 17 registered on this machine).
+- **AI generation**: reaches the configured provider and handles success/failure cleanly (verified live for
+  lesson generation and the new commentary agents — see "AI commentary agents" above), but no successful
+  generation has been observed end-to-end on this machine since the local Ollama `baseUrl` is missing `/v1`.
+  Engine analysis + live eval verified live (Stockfish 17 registered on this machine).
+- A5 (interactive "why not Nf5?" chat with engine tools) not built — parked per `AI_COMMENTARY_AGENTS_PROPOSAL.md`.
 - No packaging config (electron-builder) — app runs via `npx electron .` only.
 - Board: no keyboard move entry; no blunder heatmap. Live eval toggle is session-only (off after restart) by design.
 - Engine profiles editable only via default set; no benchmark UI. FTS5 search not wired.

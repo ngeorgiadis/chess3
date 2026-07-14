@@ -35,6 +35,9 @@ import { playVsEngine } from './engines/play'
 import { computeTodayPlan } from './plan/study-plan'
 import { getStatsOverview } from './stats'
 import { generateOutline, generateLesson } from './ai/lesson-agent'
+import { explainPosition } from './ai/explain-agent'
+import { getAnnotationsForGame } from './ai/annotate-agent'
+import { generateCoachReport, getLatestCoachReport } from './ai/coach-agent'
 import type {
   AppSettings,
   EngineProfileRecord,
@@ -42,6 +45,7 @@ import type {
   ImportChessComArgs,
   ImportLichessArgs,
   ImportPgnArgs,
+  JobRecord,
   LessonProgressRecord,
   AiOutlineArgs,
   AiGenerateArgs,
@@ -90,6 +94,23 @@ export function queueAnalysis(gameIds: string[], profileId?: string): string[] {
     jobIds.push(job.id)
   }
   return jobIds
+}
+
+/** Enqueue a game-annotation job unless one is already pending/running for this game. */
+function queueAnnotation(gameId: string): JobRecord {
+  const db = getDb()
+  const game = db.prepare('SELECT analysis_status FROM games WHERE id = ?').get(gameId) as
+    | { analysis_status: string }
+    | undefined
+  if (!game) throw new Error('Game not found.')
+  if (game.analysis_status !== 'done') throw new Error('Analyze this game before generating AI commentary.')
+  const existing = listJobs(200).find(
+    (j) =>
+      j.type === 'annotate-game' &&
+      (j.payload as { gameId?: string })?.gameId === gameId &&
+      (j.status === 'pending' || j.status === 'running')
+  )
+  return existing ?? enqueueJob('annotate-game', { gameId })
 }
 
 export function registerIpc(): void {
@@ -238,4 +259,9 @@ export function registerIpc(): void {
   // ---- AI ----
   handle('ai:outline', (args: AiOutlineArgs) => generateOutline(args))
   handle('ai:generateLesson', (args: AiGenerateArgs) => generateLesson(args))
+  handle('ai:explainPosition', (args: { gameId: string; ply: number }) => explainPosition(args.gameId, args.ply))
+  handle('ai:annotateGame', (gameId: string) => queueAnnotation(gameId))
+  handle('ai:annotationsForGame', (gameId: string) => getAnnotationsForGame(gameId))
+  handle('ai:coachReport:generate', () => generateCoachReport())
+  handle('ai:coachReport:latest', () => getLatestCoachReport())
 }

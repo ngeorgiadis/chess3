@@ -1,4 +1,4 @@
-import { chat } from './provider'
+import { chat, parseJsonLoose } from './provider'
 import { validateLesson } from '../lessons/validate'
 import type { AiGenerateArgs, AiOutlineArgs, LessonValidationReport } from '@shared/types'
 
@@ -77,28 +77,6 @@ export interface GenerateLessonResult {
   error?: string
 }
 
-function tryParseJson(text: string): unknown | null {
-  const cleaned = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '')
-  try {
-    return JSON.parse(cleaned)
-  } catch {
-    // try to find outermost object
-    const start = cleaned.indexOf('{')
-    const end = cleaned.lastIndexOf('}')
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(cleaned.slice(start, end + 1))
-      } catch {
-        return null
-      }
-    }
-    return null
-  }
-}
-
 /** Stage 4+5 of 07_AI_LESSON_SYSTEM_SPEC.md: generate JSON, validate, retry once with errors. */
 export async function generateLesson(args: AiGenerateArgs): Promise<GenerateLessonResult> {
   const baseUser = `Source material (rights mode: ${args.rightsMode}):
@@ -115,7 +93,7 @@ ${args.outline.slice(0, 8000)}
 ${jsonInstructions(args)}`
 
   let rawText = await chat({ system: SYSTEM_PROMPT, user: baseUser, expectJson: true, temperature: 0.3 })
-  let lessonJson = tryParseJson(rawText)
+  let lessonJson = parseJsonLoose(rawText)
   if (!lessonJson) {
     return { lessonJson: null, rawText, report: null, error: 'The AI response was not valid JSON.' }
   }
@@ -131,7 +109,7 @@ ${issues}
 
 Fix ALL problems and output the corrected full JSON object only.`
     rawText = await chat({ system: SYSTEM_PROMPT, user: repairUser, expectJson: true, temperature: 0.2 })
-    const repaired = tryParseJson(rawText)
+    const repaired = parseJsonLoose(rawText)
     if (repaired) {
       lessonJson = repaired
       report = validateLesson(lessonJson)

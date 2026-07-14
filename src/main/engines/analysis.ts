@@ -14,7 +14,7 @@ import type {
 const MATE_CP = 30000
 
 /** Normalize a PV score (side-to-move perspective) to a comparable centipawn number. */
-function scoreToCp(score: PvLine['score']): number {
+export function scoreToCp(score: PvLine['score']): number {
   if (score.type === 'cp') return Math.max(-MATE_CP + 1000, Math.min(MATE_CP - 1000, score.value))
   return score.value > 0 ? MATE_CP - score.value * 10 : -MATE_CP - score.value * 10
 }
@@ -128,7 +128,7 @@ function classify(
 }
 
 /** Opening/middlegame/endgame from ply position — same 20-ply / last-30% split used in stats.ts. */
-function gamePhase(ply: number, totalPlies: number): 'opening' | 'middlegame' | 'endgame' {
+export function gamePhase(ply: number, totalPlies: number): 'opening' | 'middlegame' | 'endgame' {
   if (ply <= 20) return 'opening'
   if (totalPlies > 0 && ply >= totalPlies * 0.7) return 'endgame'
   return 'middlegame'

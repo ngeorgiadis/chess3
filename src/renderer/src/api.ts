@@ -5,9 +5,11 @@ import type {
   AppSettings,
   AnalysisSummary,
   BackfillResult,
+  CoachReportRecord,
   EngineProfileRecord,
   EngineRecord,
   ExerciseRecord,
+  GameAnnotations,
   GameFilters,
   GameRecord,
   LiveEvalStatus,
@@ -147,7 +149,20 @@ export const api = {
         rawText: string
         report: LessonValidationReport | null
         error?: string
-      }>
+      }>,
+    explainPosition: (gameId: string, ply: number) =>
+      raw['ai:explainPosition']({ gameId, ply }) as Promise<{
+        text: string
+        verified: boolean
+        cached: boolean
+        model: string
+      }>,
+    annotateGame: (gameId: string) => raw['ai:annotateGame'](gameId) as Promise<JobRecord>,
+    annotationsForGame: (gameId: string) => raw['ai:annotationsForGame'](gameId) as Promise<GameAnnotations>,
+    coachReport: {
+      generate: () => raw['ai:coachReport:generate']() as Promise<CoachReportRecord>,
+      latest: () => raw['ai:coachReport:latest']() as Promise<CoachReportRecord | null>
+    }
   },
   onEvent: raw.onEvent
 }

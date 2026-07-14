@@ -5,6 +5,7 @@ import { initDb } from './db'
 import { registerIpc, queueAnalysis } from './ipc'
 import { registerJobHandler, recoverJobs, tick } from './jobs/queue'
 import { analyzeGameJob } from './engines/analysis'
+import { annotateGame } from './ai/annotate-agent'
 import { importChessCom } from './importers/chesscom'
 import { importLichess, importLichessGame } from './importers/lichess'
 import { importPgnText } from './importers/pgn'
@@ -27,6 +28,7 @@ function resourcesDir(): string {
 
 function registerJobHandlers(): void {
   registerJobHandler('analyze-game', analyzeGameJob)
+  registerJobHandler('annotate-game', (payload, ctx: JobContext) => annotateGame((payload as { gameId: string }).gameId, ctx))
   registerJobHandler('import', async (payload, ctx: JobContext) => {
     const p = payload as {
       kind: 'chesscom' | 'lichess' | 'lichess-game' | 'pgn-file'
