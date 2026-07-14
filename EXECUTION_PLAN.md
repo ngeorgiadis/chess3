@@ -1,5 +1,32 @@
 # Execution Plan — UX Fine-Tuning Pass 2 (2026-07-14)
 
+## Status (2026-07-14, branch `ux-pass-2`)
+
+Phases 1–6 all implemented, live-verified via CDP against the real running app with real
+Stockfish 17, and committed as separate commits on `ux-pass-2`. See `HANDOFF.md` → "UX
+fine-tuning pass" for the condensed summary and file pointers.
+
+- [x] Phase 1 — Review screen readability
+- [x] Phase 2 — Play it out vs engine (a real bug was caught and fixed here: `engineReply()`
+      always sent `position startpos`, breaking every game not starting from the standard
+      position — see the Phase 2 commit message)
+- [x] Phase 3 — Insights / Stats screen (a real bug was caught and fixed here: the results
+      W/D/L bar was invisible due to a flex sizing issue)
+- [x] Phase 4 — Openings intelligence
+- [x] Phase 5 — Session flow & feedback polish
+- [x] Phase 6 — partial: settings auto-save, keyboard shortcuts overlay, Copy FEN done (with
+      a real bug caught: `navigator.clipboard.writeText` fails with "Document is not focused"
+      right after a click in Electron — replaced with a `clipboard:write` IPC). **Not
+      attempted**: 6.1 Stockfish auto-download (binary download/checksum/extraction — judged
+      too risky to implement without more dedicated review) and 6.2 SVG icon set (large,
+      purely cosmetic, no functional payoff relative to effort).
+
+Not done: the 10-PR breakdown in the table below was collapsed into one branch with one
+commit per phase instead of 10 separate PRs/branches, since a single agent working
+sequentially doesn't need branch isolation between phases the way parallel humans would.
+
+---
+
 Implementation-ready plan for the findings from the 2026-07-14 live review (app walked screen-by-screen
 with real data: 197 imported games, 1 analyzed, 28 exercises, seeded lessons). Written for an agent
 picking this up cold. Companion docs: `UX_IMPROVEMENT_PLAN.md` (the 2026-07-10 review — much of it is

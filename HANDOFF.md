@@ -5,7 +5,7 @@ Electron desktop app implementing `chess_training_app_specs/` (v1 scope). Status
 ## State
 
 - Stack: Electron 37 + React 18 + TS + Zustand + chess.js + Ajv + cm-chessboard. DB: `node:sqlite` (no native deps).
-- Structure: `src/main` (DB/migrations, job queue, importers, UCI engine + analysis + live eval, lesson validation/store, AI agent, study plan), `src/preload` (typed contextBridge, no raw ipcRenderer), `src/renderer` (9 screens; board = cm-chessboard React wrapper), `src/shared` (types, JSON schemas, openings library).
+- Structure: `src/main` (DB/migrations, job queue, importers, UCI engine + analysis + live eval + play-vs-engine, lesson validation/store, AI agent, study plan, stats), `src/preload` (typed contextBridge, no raw ipcRenderer), `src/renderer` (11 screens; board = cm-chessboard React wrapper), `src/shared` (types, JSON schemas, openings library, ECO name lookup).
 - Seeds in `resources/seed/` (example lesson + course) auto-published on first run.
 - Data dir: `%APPDATA%/chess-mentor-studio`. Incompatible pre-existing app.db is auto-backed-up as `.bak` on startup.
 
@@ -23,6 +23,20 @@ Electron desktop app implementing `chess_training_app_specs/` (v1 scope). Status
 - `npm test` = build + 24-check smoke test (`electron . --smoke-test`, temp DB) — all pass. Typecheck clean. UI verified live via CDP (board render, click-move, live eval, review, settings preview; no console errors).
 
 - `npm run dev` works: the CSP in `src/main/index.ts` allows `'unsafe-inline'` scripts **in dev only** (the react-refresh preamble @vitejs/plugin-react injects); production CSP stays `script-src 'self'`.
+
+### UX fine-tuning pass (2026-07-14, branch `ux-pass-2`, see `EXECUTION_PLAN.md`)
+
+- Review screen: move counter shows chess move numbers ("Move 14 of 30") not plies; accuracy header shows `%` + player names + "(you)"; engine PV lines formatted white-perspective with move numbers and are click-to-preview on the board (step controls); severity glyph badge (??/?/?!) on the board's destination square, not just a color frame; eval-graph hover tooltip; "Copy FEN" button (via `clipboard:write` IPC — `navigator.clipboard.writeText` unreliably rejects with "Document is not focused" right after a click in Electron). ✅
+- **Play it out** (`src/main/engines/play.ts`, `PlayVsEngine` singleton): play any position against the configured engine at a chosen strength (`UCI_Elo`/`Skill Level` mapped from an 800–2500 Elo target), full game-over detection. IPC: `play:start/move/stop/status`. Entry points: Review's mistake/critical-moment cards ("Play it out from here"). Engine resolution shared with live-eval via `resolveDefaultEngineRecord()` (`engines/store.ts`). One game at a time; starting a game disables live-eval to avoid two engine processes contending. ✅
+- **Insights screen** (`src/main/stats.ts`, `stats:overview` IPC, `Insights.tsx`): rating trend (from imported game headers, filterable by time class), accuracy trend, W/D/L results overall + per time class, per-opening performance (top 15 by frequency, click-through to Games filtered by that opening), mistakes by game phase (opening/middlegame/endgame). Today's rating goal card now shows the latest real game rating + sparkline instead of a static number. ✅
+- **ECO → name mapping** (`src/shared/eco-names.ts`, `openingLabel()`): no screen shows a bare code like "D00" anymore — Games table, Review header, Insights all resolve to a readable family name (exact hit from the openings library, else standard ECO volume range). Openings screen has a "Your openings" panel with "Study this opening" jumping to the matching library entry.
+- **Repertoire cleanup**: opponent-reply context nodes (stored for tree structure) are now visually distinguished from the user's own prep moves ("(opponent)", dimmed, no status/priority) instead of both being labeled "your move". One-shot `backfillRepertoireLabels()` (runs at startup) names legacy unlabeled lines from their source game's opening.
+- **Guided session chaining**: Today's "Start today's session" populates a session queue (`store.ts`); a banner ("Task N of M — Title · Next → · ✕") persists across screens instead of dead-ending after the first task. Task→route mapping shared via `taskNav.ts`.
+- Exercise sessions: running streak + solved count + live elapsed timer; the "(you played X)" spoiler in puzzle prompts is now hidden until a hint is used or the position is attempted (`PuzzleBoard.tsx`, regex-parsed, works for pre-existing records too).
+- Lessons: per-module progress chips, resume-at-first-incomplete-step (was always restart-from-top), completion card with "Next lesson →" chaining within the same course module.
+- Settings auto-saves on every change (debounced for text, immediate for selects/checkboxes) — no more explicit Save button.
+- Global `?` keyboard-shortcuts overlay; Review's `[`/`]` (prev/next critical moment) and Space (autoplay) are now real keybindings, not button-only.
+- **Not attempted this pass** (documented as follow-up, not half-implemented): one-click Stockfish download/install, and the SVG icon set replacing mixed emoji/unicode nav icons.
 
 ## Commands
 
