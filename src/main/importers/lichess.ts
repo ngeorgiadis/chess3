@@ -1,6 +1,7 @@
 import { userAgent } from '../settings'
 import { broadcast } from '../events'
 import { parsePgnGame, insertGame } from './pgn'
+import { latestSyncedGameEndedAt } from './sync'
 import type { JobContext } from '../jobs/queue'
 import type { ImportLichessArgs, ImportResult } from '@shared/types'
 
@@ -71,13 +72,27 @@ export async function importLichess(args: ImportLichessArgs, ctx: JobContext): P
   const username = args.username.trim()
   if (!/^[a-zA-Z0-9_-]{2,30}$/.test(username)) throw new Error(`Invalid Lichess username: ${args.username}`)
 
+  // Incremental sync: unless the caller pinned an explicit `since`, resume right after the most
+  // recently imported game for this exact platform+username instead of re-fetching up to `max`
+  // games from the start every time. Existing per-game dedup (insertGame) is still the backstop.
+  let since = args.since
+  let syncedFrom: string | null = null
+  if (!since) {
+    const lastEndedAt = latestSyncedGameEndedAt('lichess', username)
+    if (lastEndedAt) {
+      since = lastEndedAt
+      syncedFrom = lastEndedAt.slice(0, 10)
+    }
+  }
+
   const result: ImportResult = {
     source: 'lichess',
     gamesSeen: 0,
     gamesImported: 0,
     duplicatesSkipped: 0,
     failed: [],
-    createdGameIds: []
+    createdGameIds: [],
+    syncedFrom
   }
 
   const params = new URLSearchParams()
@@ -91,12 +106,12 @@ export async function importLichess(args: ImportLichessArgs, ctx: JobContext): P
   if (args.perfTypes?.length) params.set('perfType', args.perfTypes.join(','))
   if (args.rated !== undefined) params.set('rated', String(args.rated))
   if (args.color) params.set('color', args.color)
-  if (args.since) params.set('since', String(new Date(args.since).getTime()))
+  if (since) params.set('since', String(new Date(since).getTime()))
   if (args.until) params.set('until', String(new Date(args.until).getTime()))
 
   const url = `https://lichess.org/api/games/user/${username}?${params.toString()}`
   const abort = new AbortController()
-  ctx.setProgress(0, max, 'Connecting to Lichess…')
+  ctx.setProgress(0, max, syncedFrom ? `Syncing new games since ${syncedFrom}…` : 'Connecting to Lichess…')
 
   const res = await fetch(url, {
     headers: { Accept: 'application/x-ndjson', 'User-Agent': userAgent() },

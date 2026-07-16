@@ -14642,6 +14642,13 @@ function registerIpc() {
   handle("ai:coachReport:generate", () => generateCoachReport());
   handle("ai:coachReport:latest", () => getLatestCoachReport());
 }
+function latestSyncedGameEndedAt(platform, username) {
+  const row = getDb().prepare(
+    `SELECT MAX(ended_at) AS ended_at FROM games
+       WHERE source_platform = ? AND (LOWER(white_name) = LOWER(?) OR LOWER(black_name) = LOWER(?))`
+  ).get(platform, username, username);
+  return row?.ended_at ?? null;
+}
 const API = "https://api.chess.com/pub";
 async function fetchJson(url) {
   const db2 = getDb();
@@ -14670,22 +14677,32 @@ async function fetchJson(url) {
 async function importChessCom(args, ctx) {
   const username = args.username.trim().toLowerCase();
   if (!/^[a-z0-9_-]{2,50}$/.test(username)) throw new Error(`Invalid Chess.com username: ${args.username}`);
+  let fromMonth = args.fromMonth;
+  let syncedFrom = null;
+  if (!fromMonth) {
+    const lastEndedAt = latestSyncedGameEndedAt("chesscom", username);
+    if (lastEndedAt) {
+      fromMonth = lastEndedAt.slice(0, 7);
+      syncedFrom = fromMonth;
+    }
+  }
   const result = {
     source: "chesscom",
     gamesSeen: 0,
     gamesImported: 0,
     duplicatesSkipped: 0,
     failed: [],
-    createdGameIds: []
+    createdGameIds: [],
+    syncedFrom
   };
-  ctx.setProgress(0, 1, "Fetching archive list…");
+  ctx.setProgress(0, 1, syncedFrom ? `Syncing new games since ${syncedFrom}…` : "Fetching archive list…");
   const archivesResp = await fetchJson(`${API}/player/${username}/games/archives`);
   let archives = archivesResp.archives ?? [];
   const monthOf = (u) => {
     const m = /\/(\d{4})\/(\d{2})$/.exec(u);
     return m ? `${m[1]}-${m[2]}` : "";
   };
-  if (args.fromMonth) archives = archives.filter((a) => monthOf(a) >= args.fromMonth);
+  if (fromMonth) archives = archives.filter((a) => monthOf(a) >= fromMonth);
   if (args.toMonth) archives = archives.filter((a) => monthOf(a) <= args.toMonth);
   archives = archives.slice().reverse();
   const maxGames = args.maxGames ?? Infinity;
@@ -14789,13 +14806,23 @@ function handleGame(g, result, knownUsername) {
 async function importLichess(args, ctx) {
   const username = args.username.trim();
   if (!/^[a-zA-Z0-9_-]{2,30}$/.test(username)) throw new Error(`Invalid Lichess username: ${args.username}`);
+  let since = args.since;
+  let syncedFrom = null;
+  if (!since) {
+    const lastEndedAt = latestSyncedGameEndedAt("lichess", username);
+    if (lastEndedAt) {
+      since = lastEndedAt;
+      syncedFrom = lastEndedAt.slice(0, 10);
+    }
+  }
   const result = {
     source: "lichess",
     gamesSeen: 0,
     gamesImported: 0,
     duplicatesSkipped: 0,
     failed: [],
-    createdGameIds: []
+    createdGameIds: [],
+    syncedFrom
   };
   const params = new URLSearchParams();
   const max = args.max ?? 100;
@@ -14808,11 +14835,11 @@ async function importLichess(args, ctx) {
   if (args.perfTypes?.length) params.set("perfType", args.perfTypes.join(","));
   if (args.rated !== void 0) params.set("rated", String(args.rated));
   if (args.color) params.set("color", args.color);
-  if (args.since) params.set("since", String(new Date(args.since).getTime()));
+  if (since) params.set("since", String(new Date(since).getTime()));
   if (args.until) params.set("until", String(new Date(args.until).getTime()));
   const url = `https://lichess.org/api/games/user/${username}?${params.toString()}`;
   const abort = new AbortController();
-  ctx.setProgress(0, max, "Connecting to Lichess…");
+  ctx.setProgress(0, max, syncedFrom ? `Syncing new games since ${syncedFrom}…` : "Connecting to Lichess…");
   const res = await fetch(url, {
     headers: { Accept: "application/x-ndjson", "User-Agent": userAgent() },
     signal: abort.signal
@@ -14968,7 +14995,7 @@ electron.app.whenReady().then(async () => {
   recoverJobs();
   void tick();
   if (isSmokeTest) {
-    void Promise.resolve().then(() => require("./smoke-rPAsBpR5.js")).then(async ({ runSmokeTest }) => {
+    void Promise.resolve().then(() => require("./smoke-C4LZxef5.js")).then(async ({ runSmokeTest }) => {
       const ok = await runSmokeTest().catch((e) => {
         console.error("Smoke test crashed:", e);
         return false;
@@ -15004,6 +15031,8 @@ exports.dueNodes = dueNodes;
 exports.getDb = getDb;
 exports.getProgress = getProgress;
 exports.importPgnText = importPgnText;
+exports.insertGame = insertGame;
+exports.latestSyncedGameEndedAt = latestSyncedGameEndedAt;
 exports.listLessons = listLessons;
 exports.listNodes = listNodes;
 exports.parsePgnGame = parsePgnGame;

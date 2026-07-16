@@ -11,7 +11,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "electron-vite build && electron . --smoke-test"
+    "test": "electron-vite build && electron . --smoke-test",
+    "dist:win": "electron-vite build && electron-builder --win nsis portable"
   },
   "dependencies": {
     "ajv": "^8.17.1",
@@ -28,8 +29,37 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^37.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^4.0.0",
     "typescript": "^5.7.3",
     "vite": "^7.0.0"
+  },
+  "build": {
+    "appId": "studio.chessmentor.desktop",
+    "productName": "Chess Mentor Studio",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "resources", "to": "resources" }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }

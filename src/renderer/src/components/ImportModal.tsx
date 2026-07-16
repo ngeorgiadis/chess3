@@ -17,8 +17,19 @@ function ResultSummary({
   onViewGames: () => void
 }): React.JSX.Element {
   const [analyzing, setAnalyzing] = useState(false)
+  const upToDate = result.syncedFrom && result.gamesSeen === 0
   return (
-    <div className={`callout ${result.gamesImported > 0 ? 'success' : 'warn'}`}>
+    <div className={`callout ${upToDate ? '' : result.gamesImported > 0 ? 'success' : 'warn'}`}>
+      {upToDate && (
+        <div style={{ marginBottom: 4 }}>
+          Already up to date — no new games since {result.syncedFrom}.
+        </div>
+      )}
+      {result.syncedFrom && !upToDate && (
+        <div className="muted" style={{ marginBottom: 4, fontSize: 12 }}>
+          Synced new games since {result.syncedFrom}.
+        </div>
+      )}
       <b>{result.gamesImported}</b> games imported, <b>{result.duplicatesSkipped}</b> duplicates skipped
       {result.failed.length > 0 && (
         <>
@@ -265,7 +276,12 @@ export function ImportModal(): React.JSX.Element {
               <div className="row">
                 <label className="field">
                   From month
-                  <input type="month" value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} />
+                  <input
+                    type="month"
+                    value={fromMonth}
+                    onChange={(e) => setFromMonth(e.target.value)}
+                    placeholder="auto"
+                  />
                 </label>
                 <label className="field">
                   To month
@@ -284,7 +300,8 @@ export function ImportModal(): React.JSX.Element {
             </div>
             <div className="muted">
               Fetches {platform === 'chesscom' ? 'monthly archives sequentially from the public Chess.com API' : 'a streamed NDJSON export from the Lichess API'}
-              . Only public, finished games are imported.
+              . Only public, finished games are imported. Repeat imports sync automatically — only games newer
+              than what you already have are fetched, unless you set {platform === 'chesscom' ? 'a "From month"' : 'a date range'} above.
             </div>
             <button className="primary" disabled={busy} onClick={() => void startUsernameImport()}>
               Start import

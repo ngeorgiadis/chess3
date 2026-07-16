@@ -2,6 +2,7 @@ import { getDb, now } from '../db'
 import { userAgent } from '../settings'
 import { broadcast } from '../events'
 import { parsePgnGame, insertGame } from './pgn'
+import { latestSyncedGameEndedAt } from './sync'
 import type { JobContext } from '../jobs/queue'
 import type { ImportChessComArgs, ImportResult } from '@shared/types'
 
@@ -53,16 +54,32 @@ export async function importChessCom(args: ImportChessComArgs, ctx: JobContext):
   const username = args.username.trim().toLowerCase()
   if (!/^[a-z0-9_-]{2,50}$/.test(username)) throw new Error(`Invalid Chess.com username: ${args.username}`)
 
+  // Incremental sync: unless the caller pinned an explicit start month, resume from the month of
+  // the most recently imported game for this exact platform+username instead of re-fetching
+  // every archive on each import. Re-fetching that boundary month (rather than the next one) is
+  // deliberate — new games may have landed in it since the last sync — existing per-game dedup
+  // (insertGame) safely skips anything already stored.
+  let fromMonth = args.fromMonth
+  let syncedFrom: string | null = null
+  if (!fromMonth) {
+    const lastEndedAt = latestSyncedGameEndedAt('chesscom', username)
+    if (lastEndedAt) {
+      fromMonth = lastEndedAt.slice(0, 7)
+      syncedFrom = fromMonth
+    }
+  }
+
   const result: ImportResult = {
     source: 'chesscom',
     gamesSeen: 0,
     gamesImported: 0,
     duplicatesSkipped: 0,
     failed: [],
-    createdGameIds: []
+    createdGameIds: [],
+    syncedFrom
   }
 
-  ctx.setProgress(0, 1, 'Fetching archive list…')
+  ctx.setProgress(0, 1, syncedFrom ? `Syncing new games since ${syncedFrom}…` : 'Fetching archive list…')
   const archivesResp = (await fetchJson(`${API}/player/${username}/games/archives`)) as { archives: string[] }
   let archives = archivesResp.archives ?? []
 
@@ -71,7 +88,7 @@ export async function importChessCom(args: ImportChessComArgs, ctx: JobContext):
     const m = /\/(\d{4})\/(\d{2})$/.exec(u)
     return m ? `${m[1]}-${m[2]}` : ''
   }
-  if (args.fromMonth) archives = archives.filter((a) => monthOf(a) >= args.fromMonth!)
+  if (fromMonth) archives = archives.filter((a) => monthOf(a) >= fromMonth!)
   if (args.toMonth) archives = archives.filter((a) => monthOf(a) <= args.toMonth!)
   // newest first so maxGames takes recent games
   archives = archives.slice().reverse()

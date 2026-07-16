@@ -177,6 +177,24 @@ async function runSmokeTest() {
   check("narrative verifier accepts real game moves", narrativeOk.verified, JSON.stringify(narrativeOk.issues));
   const narrativeBad = index.verifyNarrative(["e4", "e5"], [sampleDossier], "Black later delivered Qxh7# to finish the game.");
   check("narrative verifier flags an unlisted move", !narrativeBad.verified, JSON.stringify(narrativeBad.issues));
+  const syncPgn = `[White "SyncUser"]
+[Black "opponent"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 1-0`;
+  index.insertGame({
+    parsed: index.parsePgnGame(syncPgn),
+    sourcePlatform: "chesscom",
+    sourceGameId: "sync-test-1",
+    overrides: { endedAt: "2026-06-15T12:00:00.000Z" }
+  });
+  check(
+    "sync boundary found for matching platform+username",
+    index.latestSyncedGameEndedAt("chesscom", "syncuser") === "2026-06-15T12:00:00.000Z"
+  );
+  check("sync boundary lookup is case-insensitive", index.latestSyncedGameEndedAt("chesscom", "SYNCUSER") !== null);
+  check("sync boundary is scoped to the platform", index.latestSyncedGameEndedAt("lichess", "syncuser") === null);
+  check("sync boundary is null for an unknown username", index.latestSyncedGameEndedAt("chesscom", "nobody-imported-this") === null);
   console.log(failures === 0 ? "SMOKE TEST PASSED" : `SMOKE TEST FAILED (${failures} failures)`);
   return failures === 0;
 }
