@@ -4,6 +4,7 @@ import { api } from '../api'
 import { useStore, useAppEvent } from '../store'
 import { Board } from '../components/Board'
 import { PlayOut } from '../components/PlayOut'
+import { useBoardSize } from '../boardSize'
 import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
 import { openingLabel } from '@shared/eco-names'
 import type { GameAnnotations, GameRecord, MistakeRecord, MoveRecord, PositionAnalysis, PvLine } from '@shared/types'
@@ -198,6 +199,7 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
   const [previewIdx, setPreviewIdx] = useState(0)
   /** Set to a fen to swap the board area for a playable game vs the engine from that position. */
   const [playFen, setPlayFen] = useState<string | null>(null)
+  const [boardSize, setBoardSize] = useBoardSize('review', 440)
   /** AI coach: per-game narrative + per-move commentary (A2), and the on-demand explainer (A1). */
   const [annotations, setAnnotations] = useState<GameAnnotations>(EMPTY_ANNOTATIONS)
   const [explain, setExplain] = useState<{ ply: number; text: string } | null>(null)
@@ -505,9 +507,15 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
         </div>
 
         {/* Board */}
-        <div style={{ flex: '0 1 460px', minWidth: 300 }}>
+        <div style={{ flex: `0 1 ${boardSize}px`, minWidth: 300 }}>
           {playFen ? (
-            <PlayOut fen={playFen} userColor={orientation} onExit={() => setPlayFen(null)} />
+            <PlayOut
+              fen={playFen}
+              userColor={orientation}
+              onExit={() => setPlayFen(null)}
+              boardSize={boardSize}
+              onBoardResize={setBoardSize}
+            />
           ) : (
             <>
               <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}>
@@ -527,7 +535,9 @@ export function Review({ gameId }: { gameId: string }): React.JSX.Element {
                     lastMove={lastMove}
                     lastMoveSeverity={previewing ? null : mistakeHere?.severity ?? null}
                     arrows={boardArrows}
-                    maxWidth={440}
+                    maxWidth={boardSize}
+                    resizable
+                    onResize={setBoardSize}
                   />
                 </div>
               </div>

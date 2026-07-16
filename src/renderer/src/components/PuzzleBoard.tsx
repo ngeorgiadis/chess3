@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Chess } from 'chess.js'
 import { Board } from './Board'
 import { playSound } from '../sound'
+import { useBoardSize } from '../boardSize'
 import type { SolutionMove } from '@shared/types'
 
 export interface PuzzleBoardProps {
@@ -30,6 +31,7 @@ export function PuzzleBoard({
   onComplete,
   maxWidth = 480
 }: PuzzleBoardProps): React.JSX.Element {
+  const [boardSize, setBoardSize] = useBoardSize('puzzle', maxWidth)
   const [position, setPosition] = useState(fen)
   const [solutionIdx, setSolutionIdx] = useState(0)
   const [status, setStatus] = useState<Status>('solving')
@@ -128,14 +130,16 @@ export function PuzzleBoard({
 
   return (
     <div className="row" style={{ alignItems: 'flex-start', gap: 18 }}>
-      <div style={{ flex: `0 1 ${maxWidth}px`, minWidth: 300 }}>
+      <div style={{ flex: `0 1 ${boardSize}px`, minWidth: 300 }}>
         <Board
           fen={position}
           orientation={orientation}
           interactive={status !== 'solved'}
           lastMove={lastMove}
           onMove={handleMove}
-          maxWidth={maxWidth}
+          maxWidth={boardSize}
+          resizable
+          onResize={setBoardSize}
         />
       </div>
       <div className="col" style={{ flex: 1, minWidth: 220 }}>
