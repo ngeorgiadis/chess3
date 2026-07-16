@@ -14050,6 +14050,32 @@ const SEVERITY_GLYPH = {
   "missed-draw": { glyph: "?", cls: "sev-mistake" },
   inaccuracy: { glyph: "?!", cls: "sev-inaccuracy" }
 };
+const MIN_BOARD_SIZE = 240;
+const MAX_BOARD_SIZE = 720;
+function clampBoardSize(n) {
+  return Math.max(MIN_BOARD_SIZE, Math.min(MAX_BOARD_SIZE, Math.round(n)));
+}
+const STORAGE_PREFIX = "cms-board-size:";
+function useBoardSize(key, defaultSize) {
+  const [size, setSizeState] = reactExports.useState(() => {
+    try {
+      const stored = window.localStorage.getItem(STORAGE_PREFIX + key);
+      const n = stored ? parseInt(stored, 10) : NaN;
+      return Number.isFinite(n) ? clampBoardSize(n) : defaultSize;
+    } catch {
+      return defaultSize;
+    }
+  });
+  const setSize = (next) => {
+    const clamped = clampBoardSize(next);
+    setSizeState(clamped);
+    try {
+      window.localStorage.setItem(STORAGE_PREFIX + key, String(clamped));
+    } catch {
+    }
+  };
+  return [size, setSize];
+}
 const PIECE_SPRITES = { standard: piecesStandardRaw, staunty: piecesStauntyRaw };
 function injectSprite(id, svgText, key) {
   let el = document.getElementById(id);
@@ -14121,10 +14147,13 @@ function Board({
   maxWidth,
   evalTarget = true,
   allowFlip = true,
+  resizable = false,
+  onResize,
   themeOverride,
   pieceSetOverride
 }) {
   const containerRef = reactExports.useRef(null);
+  const resizeDragRef = reactExports.useRef(null);
   const [board, setBoard] = reactExports.useState(null);
   const [flipped, setFlipped] = reactExports.useState(false);
   const effOrientation = flipped ? orientation === "white" ? "black" : "white" : orientation;
@@ -14291,6 +14320,26 @@ function Board({
       }
     };
   }, [board, interactive]);
+  function handleResizePointerDown(e) {
+    if (!maxWidth || !onResize) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeDragRef.current = { startX: e.clientX, startY: e.clientY, startSize: maxWidth };
+  }
+  function handleResizePointerMove(e) {
+    const drag = resizeDragRef.current;
+    if (!drag || !onResize) return;
+    const delta = Math.max(e.clientX - drag.startX, e.clientY - drag.startY);
+    onResize(clampBoardSize(drag.startSize + delta));
+  }
+  function handleResizePointerUp(e) {
+    if (!resizeDragRef.current) return;
+    resizeDragRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+    }
+  }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(
     "div",
     {
@@ -14299,17 +14348,30 @@ function Board({
       role: "group",
       "aria-label": `Chess board, ${chess.turn() === "w" ? "white" : "black"} to move`,
       children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: containerRef, className: "cm-board-container" }),
-        lastMoveSeverity && lastMove && /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "span",
-          {
-            className: `board-severity-badge ${SEVERITY_GLYPH[lastMoveSeverity].cls}`,
-            style: squareBadgePosition(lastMove.to, effOrientation),
-            title: SEVERITY_LABEL[lastMoveSeverity],
-            "aria-hidden": "true",
-            children: SEVERITY_GLYPH[lastMoveSeverity].glyph
-          }
-        ),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "board-inner", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { ref: containerRef, className: "cm-board-container" }),
+          lastMoveSeverity && lastMove && /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "span",
+            {
+              className: `board-severity-badge ${SEVERITY_GLYPH[lastMoveSeverity].cls}`,
+              style: squareBadgePosition(lastMove.to, effOrientation),
+              title: SEVERITY_LABEL[lastMoveSeverity],
+              "aria-hidden": "true",
+              children: SEVERITY_GLYPH[lastMoveSeverity].glyph
+            }
+          ),
+          resizable && onResize && /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "div",
+            {
+              className: "board-resize-handle",
+              title: "Drag to resize the board",
+              onPointerDown: handleResizePointerDown,
+              onPointerMove: handleResizePointerMove,
+              onPointerUp: handleResizePointerUp,
+              children: "⤡"
+            }
+          )
+        ] }),
         allowFlip && /* @__PURE__ */ jsxRuntimeExports.jsx(
           "button",
           {
@@ -15298,7 +15360,9 @@ function resultLabel(state, userColor) {
 function PlayOut({
   fen,
   userColor,
-  onExit
+  onExit,
+  boardSize,
+  onBoardResize
 }) {
   const [state, setState] = reactExports.useState(null);
   const [started, setStarted] = reactExports.useState(false);
@@ -15369,7 +15433,9 @@ function PlayOut({
         onMove: (uci) => void handleMove(uci),
         lastMove,
         evalTarget: false,
-        maxWidth: 440
+        maxWidth: boardSize ?? 440,
+        resizable: Boolean(onBoardResize),
+        onResize: onBoardResize
       }
     ),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 10, justifyContent: "space-between" }, children: [
@@ -15536,6 +15602,7 @@ function Review({ gameId }) {
   const [previewRank, setPreviewRank] = reactExports.useState(null);
   const [previewIdx, setPreviewIdx] = reactExports.useState(0);
   const [playFen, setPlayFen] = reactExports.useState(null);
+  const [boardSize, setBoardSize] = useBoardSize("review", 440);
   const [annotations, setAnnotations] = reactExports.useState(EMPTY_ANNOTATIONS);
   const [explain, setExplain] = reactExports.useState(null);
   const [explainLoading, setExplainLoading] = reactExports.useState(false);
@@ -15772,7 +15839,16 @@ function Review({ gameId }) {
           ] }, m.ply);
         }) })
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: "0 1 460px", minWidth: 300 }, children: playFen ? /* @__PURE__ */ jsxRuntimeExports.jsx(PlayOut, { fen: playFen, userColor: orientation, onExit: () => setPlayFen(null) }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: `0 1 ${boardSize}px`, minWidth: 300 }, children: playFen ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+        PlayOut,
+        {
+          fen: playFen,
+          userColor: orientation,
+          onExit: () => setPlayFen(null),
+          boardSize,
+          onBoardResize: setBoardSize
+        }
+      ) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 8 }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(
             "div",
@@ -15793,7 +15869,9 @@ function Review({ gameId }) {
               lastMove,
               lastMoveSeverity: previewing ? null : mistakeHere?.severity ?? null,
               arrows: boardArrows,
-              maxWidth: 440
+              maxWidth: boardSize,
+              resizable: true,
+              onResize: setBoardSize
             }
           ) })
         ] }),
@@ -16590,6 +16668,7 @@ function PuzzleBoard({
   onComplete,
   maxWidth = 480
 }) {
+  const [boardSize, setBoardSize] = useBoardSize("puzzle", maxWidth);
   const [position, setPosition] = reactExports.useState(fen);
   const [solutionIdx, setSolutionIdx] = reactExports.useState(0);
   const [status, setStatus] = reactExports.useState("solving");
@@ -16673,7 +16752,7 @@ function PuzzleBoard({
   const spoilerText = spoilerMatch ? spoilerMatch[2] : null;
   const spoilerRevealed = status !== "solving" || hintsShown > 0;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 18 }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: `0 1 ${maxWidth}px`, minWidth: 300 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: `0 1 ${boardSize}px`, minWidth: 300 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
       Board,
       {
         fen: position,
@@ -16681,7 +16760,9 @@ function PuzzleBoard({
         interactive: status !== "solved",
         lastMove,
         onMove: handleMove,
-        maxWidth
+        maxWidth: boardSize,
+        resizable: true,
+        onResize: setBoardSize
       }
     ) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col", style: { flex: 1, minWidth: 220 }, children: [
@@ -16724,6 +16805,7 @@ function orientationOf(pos) {
 }
 function DemonstrationStep({ step, position }) {
   const [idx, setIdx] = reactExports.useState(0);
+  const [boardSize, setBoardSize] = useBoardSize("lesson-demo", 440);
   const line = step.line ?? [];
   const { fen, lastMove, comment } = reactExports.useMemo(() => {
     const chess = new Chess(position.fen);
@@ -16742,7 +16824,7 @@ function DemonstrationStep({ step, position }) {
     return { fen: chess.fen(), lastMove: last, comment: cmt };
   }, [idx, line, position.fen]);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { alignItems: "flex-start", gap: 18 }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: "0 1 440px", minWidth: 300 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: `0 1 ${boardSize}px`, minWidth: 300 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(
         Board,
         {
@@ -16751,7 +16833,9 @@ function DemonstrationStep({ step, position }) {
           lastMove,
           arrows: idx === 0 ? position.arrows : [],
           markedSquares: idx === 0 ? position.highlights?.map((h) => h.square) : [],
-          maxWidth: 440
+          maxWidth: boardSize,
+          resizable: true,
+          onResize: setBoardSize
         }
       ),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "row", style: { marginTop: 8, justifyContent: "center" }, children: [

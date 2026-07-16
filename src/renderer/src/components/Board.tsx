@@ -23,6 +23,7 @@ import arrowsRaw from 'cm-chessboard/assets/extensions/arrows/arrows.svg?raw'
 import { useStore, useEvalTarget } from '../store'
 import { playSound } from '../sound'
 import { SEVERITY_GLYPH, SEVERITY_LABEL } from '../severity'
+import { clampBoardSize } from '../boardSize'
 import type { BoardColorScheme, MistakeSeverity, PieceSet } from '@shared/types'
 import type { MarkerType } from 'cm-chessboard'
 
@@ -114,6 +115,9 @@ export interface BoardProps {
   evalTarget?: boolean
   /** Show the flip control on the board (default true; small previews opt out). */
   allowFlip?: boolean
+  /** Show a drag handle to resize the board; requires onResize (the parent owns the size — see useBoardSize). */
+  resizable?: boolean
+  onResize?: (size: number) => void
   /** Override the color scheme from settings (used by the settings preview). */
   themeOverride?: BoardColorScheme
   /** Override the piece set from settings (used by the settings preview). */
@@ -145,10 +149,13 @@ export function Board({
   maxWidth,
   evalTarget = true,
   allowFlip = true,
+  resizable = false,
+  onResize,
   themeOverride,
   pieceSetOverride
 }: BoardProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  const resizeDragRef = useRef<{ startX: number; startY: number; startSize: number } | null>(null)
   const [board, setBoard] = useState<Chessboard | null>(null)
   const [flipped, setFlipped] = useState(false)
   const effOrientation: 'white' | 'black' = flipped
@@ -355,6 +362,32 @@ export function Board({
     }
   }, [board, interactive])
 
+  function handleResizePointerDown(e: React.PointerEvent<HTMLDivElement>): void {
+    if (!maxWidth || !onResize) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    resizeDragRef.current = { startX: e.clientX, startY: e.clientY, startSize: maxWidth }
+  }
+
+  function handleResizePointerMove(e: React.PointerEvent<HTMLDivElement>): void {
+    const drag = resizeDragRef.current
+    if (!drag || !onResize) return
+    // Diagonal drag: either axis grows the board, so a natural drag toward the corner works
+    // regardless of whether the user's hand drifts more horizontally or vertically.
+    const delta = Math.max(e.clientX - drag.startX, e.clientY - drag.startY)
+    onResize(clampBoardSize(drag.startSize + delta))
+  }
+
+  function handleResizePointerUp(e: React.PointerEvent<HTMLDivElement>): void {
+    if (!resizeDragRef.current) return
+    resizeDragRef.current = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* pointer already released */
+    }
+  }
+
   return (
     <div
       className="board-wrap"
@@ -362,17 +395,30 @@ export function Board({
       role="group"
       aria-label={`Chess board, ${chess.turn() === 'w' ? 'white' : 'black'} to move`}
     >
-      <div ref={containerRef} className="cm-board-container" />
-      {lastMoveSeverity && lastMove && (
-        <span
-          className={`board-severity-badge ${SEVERITY_GLYPH[lastMoveSeverity].cls}`}
-          style={squareBadgePosition(lastMove.to, effOrientation)}
-          title={SEVERITY_LABEL[lastMoveSeverity]}
-          aria-hidden="true"
-        >
-          {SEVERITY_GLYPH[lastMoveSeverity].glyph}
-        </span>
-      )}
+      <div className="board-inner">
+        <div ref={containerRef} className="cm-board-container" />
+        {lastMoveSeverity && lastMove && (
+          <span
+            className={`board-severity-badge ${SEVERITY_GLYPH[lastMoveSeverity].cls}`}
+            style={squareBadgePosition(lastMove.to, effOrientation)}
+            title={SEVERITY_LABEL[lastMoveSeverity]}
+            aria-hidden="true"
+          >
+            {SEVERITY_GLYPH[lastMoveSeverity].glyph}
+          </span>
+        )}
+        {resizable && onResize && (
+          <div
+            className="board-resize-handle"
+            title="Drag to resize the board"
+            onPointerDown={handleResizePointerDown}
+            onPointerMove={handleResizePointerMove}
+            onPointerUp={handleResizePointerUp}
+          >
+            ⤡
+          </div>
+        )}
+      </div>
       {allowFlip && (
         <button
           type="button"

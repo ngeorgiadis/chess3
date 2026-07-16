@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Chess } from 'chess.js'
 import { Board } from './Board'
 import { PuzzleBoard } from './PuzzleBoard'
+import { useBoardSize } from '../boardSize'
 import type { LessonJson, LessonPosition, LessonStep } from '../lesson-types'
 
 interface LessonViewProps {
@@ -18,6 +19,7 @@ function orientationOf(pos: LessonPosition): 'white' | 'black' {
 
 function DemonstrationStep({ step, position }: { step: LessonStep; position: LessonPosition }): React.JSX.Element {
   const [idx, setIdx] = useState(0)
+  const [boardSize, setBoardSize] = useBoardSize('lesson-demo', 440)
   const line = step.line ?? []
 
   const { fen, lastMove, comment } = useMemo(() => {
@@ -39,14 +41,16 @@ function DemonstrationStep({ step, position }: { step: LessonStep; position: Les
 
   return (
     <div className="row" style={{ alignItems: 'flex-start', gap: 18 }}>
-      <div style={{ flex: '0 1 440px', minWidth: 300 }}>
+      <div style={{ flex: `0 1 ${boardSize}px`, minWidth: 300 }}>
         <Board
           fen={fen}
           orientation={orientationOf(position)}
           lastMove={lastMove}
           arrows={idx === 0 ? position.arrows : []}
           markedSquares={idx === 0 ? position.highlights?.map((h) => h.square) : []}
-          maxWidth={440}
+          maxWidth={boardSize}
+          resizable
+          onResize={setBoardSize}
         />
         <div className="row" style={{ marginTop: 8, justifyContent: 'center' }}>
           <button className="small" onClick={() => setIdx(0)}>⏮</button>

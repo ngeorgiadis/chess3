@@ -21,11 +21,16 @@ function resultLabel(state: PlayGameState, userColor: 'white' | 'black'): string
 export function PlayOut({
   fen,
   userColor,
-  onExit
+  onExit,
+  boardSize,
+  onBoardResize
 }: {
   fen: string
   userColor: 'white' | 'black'
   onExit: () => void
+  /** Shared with the Review board it replaces, so switching in/out of Play-it-out doesn't jump size. */
+  boardSize?: number
+  onBoardResize?: (size: number) => void
 }): React.JSX.Element {
   const [state, setState] = useState<PlayGameState | null>(null)
   const [started, setStarted] = useState(false)
@@ -115,7 +120,9 @@ export function PlayOut({
         onMove={(uci) => void handleMove(uci)}
         lastMove={lastMove}
         evalTarget={false}
-        maxWidth={440}
+        maxWidth={boardSize ?? 440}
+        resizable={Boolean(onBoardResize)}
+        onResize={onBoardResize}
       />
       <div className="row" style={{ marginTop: 10, justifyContent: 'space-between' }}>
         <div className="muted">

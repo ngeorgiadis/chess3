@@ -108,6 +108,31 @@ call for the same user correctly narrowed to the boundary (`syncedFrom: "2026-05
 `gamesSeen: 0`, ~150ms). 4 new deterministic smoke checks for `latestSyncedGameEndedAt`
 (platform-scoping, case-insensitivity, unknown-username) — `npm test` passes; typecheck clean.
 
+### Resizable board (2026-07-14, branch `ux-pass-2`)
+
+`Board.tsx` gained a drag-to-resize handle (⤡, bottom-right corner of the board itself — a new
+`.board-inner` wrapper scopes it to just the board, not the flip button below; this also fixes a
+latent bug where the severity badge's percentage-based position was computed against the wrong
+box height when `allowFlip` was on). Opt in per usage via `resizable` + `onResize` props; the
+parent owns the size (same controlled pattern as everything else here).
+
+- `src/renderer/src/boardSize.ts`: `useBoardSize(key, defaultSize)` — clamps to
+  [`MIN_BOARD_SIZE` 240, `MAX_BOARD_SIZE` 720] and persists per usage context to
+  `localStorage['cms-board-size:<key>']`.
+- Wired into the "main" interactive boards only — **not** the small previews (Settings, Openings
+  tree/library, Games row-preview), which stay fixed to avoid breaking dense layouts: Review
+  (`key: 'review'`), the embedded Play-it-out board (shares Review's size via new `boardSize`/
+  `onBoardResize` props so switching modes doesn't jump), `PuzzleBoard.tsx` (`key: 'puzzle'` —
+  self-contained, so both Exercises and Lesson exercises/move_input steps get it for free), and
+  `LessonView.tsx`'s demonstration-step board (`key: 'lesson-demo'`).
+
+**Live-verified via CDP** with real trusted `Input.dispatchMouseEvent` drag events (not just a
+state-setter call): dragged the handle 120px diagonally, board grew 418px → 538px in real time
+with zero console errors and no layout breakage (coaching panel reflows, move list unaffected);
+confirmed the resize handle stays anchored to the board's own corner regardless of the flip
+button. Did a real `Page.reload()` afterward — the board came back at the persisted size read
+from `localStorage`, confirming the persistence path (not just in-memory state) actually works.
+
 ## Commands
 
 ```
